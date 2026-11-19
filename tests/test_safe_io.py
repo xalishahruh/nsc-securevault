@@ -169,7 +169,7 @@ def test_safe_write_publication_failure_cleans_up_staging(tmp_path: Path, monkey
 
 
 def test_safe_write_post_publication_cleanup_failure_preserves_target(tmp_path: Path, monkeypatch):
-    """C01 Regression: Failure to remove staging link after successful publication preserves target."""
+    """C01 Regression: Failure to remove staging link after publication emits an observable warning and preserves target."""
     orig_unlink = Path.unlink
 
     def mock_unlink(self, *args, **kwargs):
@@ -180,10 +180,12 @@ def test_safe_write_post_publication_cleanup_failure_preserves_target(tmp_path: 
     monkeypatch.setattr(Path, "unlink", mock_unlink)
 
     target = tmp_path / "published.bin"
-    # Should not raise exception because publication succeeded
-    _safe_write_bytes(target, b"vital data", overwrite=False)
 
-    # Target file MUST exist with correct content
+    # Verifies that cleanup failure emits an observable warning without raising an exception to the caller
+    with pytest.warns(UserWarning, match=r"Failed to remove temporary staging file \.svlt_tmp_"):
+        _safe_write_bytes(target, b"vital data", overwrite=False)
+
+    # Target file MUST exist with exact payload, never rolled back or unlinked
     assert target.exists()
     assert target.read_bytes() == b"vital data"
 

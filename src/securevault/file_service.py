@@ -1,9 +1,13 @@
 """Safe staging, atomic commit, and high-level file encryption/decryption operations."""
 
+import logging
 import os
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from securevault.container import (
     ContainerHeader,
@@ -99,12 +103,18 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
                     f"Atomic exclusive publication unsupported or failed on this filesystem: {err}"
                 ) from err
 
-            # Post-publication cleanup: target is durably published; remove staging link
+            # Post-publication cleanup: target link is established; remove staging link.
+            # Note: while payload bytes are fsync'd, parent directory metadata durability depends on OS/filesystem sync semantics.
             try:
                 tmp_path.unlink()
-            except OSError:
-                # Cleanup failure of staging link must not compromise or remove published target
-                pass
+            except OSError as err:
+                # Cleanup failure of staging link must not compromise, roll back, or remove published target
+                logger.warning("Failed to remove temporary staging file %s: %s", tmp_path.name, err)
+                warnings.warn(
+                    f"Failed to remove temporary staging file {tmp_path.name}: {err}",
+                    UserWarning,
+                    stacklevel=2,
+                )
         else:
             os.replace(tmp_path, target)
             published = True
