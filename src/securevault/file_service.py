@@ -131,20 +131,28 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
 def encrypt_file(
     input_path: Path,
     output_path: Path,
-    key_output_path: Optional[Path] = None,
+    key_output_path: Path,
     mode: str = "gcm",
     overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Encrypt a local file to .svlt container format with fresh DEK and external key."""
+    if key_output_path is None:
+        raise ValueError("A valid key_output_path must be provided to store the encryption key.")
+
+    if overwrite:
+        raise FileServiceError(
+            "Overwriting existing container or key files is not supported during encryption; "
+            "use distinct output paths to prevent unrecoverable data loss."
+        )
+
     mode_lower = mode.lower()
     if mode_lower not in ("gcm", "cbc"):
         raise ValueError(f"Unsupported mode: '{mode}'. Allowed modes are 'gcm' and 'cbc'.")
 
-    _check_path_safety(input_path, output_path, overwrite=overwrite)
-    if key_output_path is not None:
-        _check_path_safety(input_path, key_output_path, overwrite=overwrite)
-        if output_path.resolve() == key_output_path.resolve():
-            raise SameFileError("Output container and key output cannot be the same file.")
+    _check_path_safety(input_path, output_path, overwrite=False)
+    _check_path_safety(input_path, key_output_path, overwrite=False)
+    if output_path.resolve() == key_output_path.resolve():
+        raise SameFileError("Output container and key output cannot be the same file.")
 
     plaintext = input_path.read_bytes()
     if len(plaintext) > MAX_CIPHERTEXT_SIZE:
@@ -195,25 +203,27 @@ def encrypt_file(
             key_protection_id=KEY_PROT_EXTERNAL,
         )
 
-    # Write key record first (if requested) then container
-    if key_output_path is not None:
-        key_record = ExternalKeyRecord(
-            version=1,
-            file_id=file_id,
-            cipher_id=cipher_id,
-            dek=dek,
-        )
-        _safe_write_bytes(key_output_path, key_record.serialize(), overwrite=overwrite, file_mode=0o600)
+    # Publish key record first
+    key_record = ExternalKeyRecord(
+        version=1,
+        file_id=file_id,
+        cipher_id=cipher_id,
+        dek=dek,
+    )
+    _safe_write_bytes(key_output_path, key_record.serialize(), overwrite=False, file_mode=0o600)
 
     try:
-        _safe_write_bytes(output_path, container_bytes, overwrite=overwrite, file_mode=0o600)
+        _safe_write_bytes(output_path, container_bytes, overwrite=False, file_mode=0o600)
     except Exception:
-        # If writing container fails, clean up the newly created key file if we created it
-        if key_output_path is not None and key_output_path.exists() and not overwrite:
-            try:
-                key_output_path.unlink()
-            except OSError:
-                pass
+        # Container publication failed after key file was published.
+        # To avoid TOCTOU races and accidental deletion of pre-existing/concurrent files,
+        # never automatically unlink the key file. Preserve it and emit an observable warning.
+        msg = (
+            f"Container publication failed; preserved published key at '{key_output_path.name}'. "
+            "An orphaned key file may remain."
+        )
+        logger.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
         raise
 
     return {
@@ -223,7 +233,7 @@ def encrypt_file(
         "ciphertext_bytes": len(ciphertext),
         "container_bytes": len(container_bytes),
         "output_path": str(output_path),
-        "key_path": str(key_output_path) if key_output_path else None,
+        "key_path": str(key_output_path),
     }
 
 
