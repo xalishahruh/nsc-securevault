@@ -1,22 +1,45 @@
-'''Benchmark runner for SecureVault AES implementations.
+"""Benchmark runner for SecureVault AES implementations.
 
-This module provides a reproducible benchmark comparing AES‑256‑GCM and
-AES‑256‑CBC encryption and decryption performance across three fixture
-sizes (1 KiB, 1 MiB, 10 MiB).  The runner is deliberately lightweight – it
-uses only the project's public crypto helpers and records timing
-information in a CSV file without persisting any secret material.
+This module provides a reproducible benchmark comparing AES-256-GCM and
+AES-256-CBC encryption and decryption performance across three fixture
+sizes (1 KiB, 1 MiB, 10 MiB).
 
-The benchmark can be executed directly:
+Measurement Boundaries and Timing Definitions:
+----------------------------------------------
+The benchmark strictly isolates the raw cryptographic operation within the
+timed interval using `time.perf_counter_ns()`:
 
-    python -m benchmarks.benchmark_modes
+- Encryption Measurement Boundary:
+  INCLUDED: Only the raw invocation of `encrypt_gcm(dek, nonce, plaintext)` or
+            `encrypt_cbc(dek, iv, plaintext)`.
+  EXCLUDED: Fixture generation, DEK and nonce/IV generation, allocation of
+            buffers, verification, and CSV I/O.
 
-A small API (``run_benchmark``) is also exposed for the test suite so the
-observation count can be constrained.
-'''  # noqa: D400,D401
+- Decryption Measurement Boundary:
+  INCLUDED: Only the raw invocation of `decrypt_gcm(dek, nonce, ciphertext, tag)`
+            or `decrypt_cbc(dek, iv, ciphertext)`.
+  EXCLUDED: Fixture generation, preparation of valid ciphertext and tags,
+            DEK and nonce/IV generation, post-decryption plaintext equality
+            validation, and CSV I/O. All decryption inputs (valid ciphertext,
+            tag, key, and IV/nonce) are fully prepared in advance prior to
+            starting the timed decryption interval.
+
+Order and Bias Controls:
+------------------------
+- Warm-up iterations: Untimed warm-up cycles are run before measuring each
+  configuration to eliminate cold-start cache and interpreter artifacts.
+- Order Alternation: Within each configuration, the order of encryption and
+  decryption measurement is balanced and alternated (even repetitions measure
+  encryption then decryption; odd repetitions measure decryption then encryption)
+  to mitigate systematic order bias.
+- Correctness Validation: An untimed round-trip validation is performed before
+  any measurements are collected for each configuration.
+"""
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
 import platform
 import ssl
@@ -25,41 +48,41 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Tuple
+from typing import List, Tuple
 
-from securevault.crypto.gcm import (
-    GCM_KEY_SIZE,
-    GCM_NONCE_SIZE,
-    encrypt_gcm,
-    decrypt_gcm,
-    generate_gcm_dek,
-    generate_gcm_nonce,
-)
 from securevault.crypto.cbc import (
-    CBC_BLOCK_SIZE,
-    CBC_IV_SIZE,
     encrypt_cbc,
     decrypt_cbc,
     generate_cbc_dek,
     generate_cbc_iv,
 )
+from securevault.crypto.gcm import (
+    encrypt_gcm,
+    decrypt_gcm,
+    generate_gcm_dek,
+    generate_gcm_nonce,
+)
 
-# ---------------------------------------------------------------------------
-# Helper data structures
-# ---------------------------------------------------------------------------
+BENCHMARK_SIZES: Tuple[int, ...] = (1024, 1024 * 1024, 10 * 1024 * 1024)
+BENCHMARK_MODES: Tuple[str, ...] = ("gcm", "cbc")
+TIMING_BOUNDARY_DEF: str = "crypto_primitive_only_excluding_setup_io_and_validation"
+
 
 @dataclass(frozen=True)
 class BenchmarkResult:
-    mode: str               # 'gcm' or 'cbc'
-    operation: str          # 'encrypt' or 'decrypt'
+    mode: str
+    operation: str
     size_bytes: int
     repeat: int
     elapsed_ns: int
     python_version: str
     os: str
+    cpu: str
     cpu_count: int | None
     cryptography_version: str
     openssl_version: str
+    run_parameters: str
+    timing_boundary: str
 
     def as_tuple(self) -> Tuple:
         return (
@@ -70,142 +93,190 @@ class BenchmarkResult:
             self.elapsed_ns,
             self.python_version,
             self.os,
+            self.cpu,
             self.cpu_count,
             self.cryptography_version,
             self.openssl_version,
+            self.run_parameters,
+            self.timing_boundary,
         )
 
-# ---------------------------------------------------------------------------
-# Deterministic fixture generation
-# ---------------------------------------------------------------------------
+
+def get_cryptography_openssl_version() -> str:
+    """Return the OpenSSL version string actually used by cryptography."""
+    try:
+        from cryptography.hazmat.backends.openssl.backend import backend
+
+        return backend.openssl_version_text()
+    except Exception:
+        return ssl.OPENSSL_VERSION
+
+
+def get_cpu_info() -> str:
+    """Return descriptive CPU architecture / processor information."""
+    processor = platform.processor()
+    machine = platform.machine()
+    if processor and machine and processor != machine:
+        return f"{processor} ({machine})"
+    return processor or machine or "unknown"
+
 
 def _deterministic_fixture(size: int) -> bytes:
-    """Return a deterministic ``bytes`` object of *size*.
+    """Return deterministic bytes of given size generated via SHA-256 chaining.
 
-    The function uses a simple deterministic PRNG based on SHA‑256 to avoid
-    any reliance on the system's random source.  The same seed (``b'benchmark'``)
-    is used for every call, so the output is reproducible across runs and
-    platforms.
+    The fixture is completely reproducible and does not consume OS entropy.
     """
-    import hashlib
-
     out = bytearray()
-    seed = b"benchmark"
+    seed = b"SecureVault-AES-Benchmark-Deterministic-Seed"
     while len(out) < size:
         seed = hashlib.sha256(seed).digest()
         out.extend(seed)
     return bytes(out[:size])
 
-# ---------------------------------------------------------------------------
-# Core benchmark logic
-# ---------------------------------------------------------------------------
-
-def _run_one(
-    mode: str,
-    plaintext: bytes,
-    encrypt_func: Callable[[bytes, bytes, bytes], Tuple[bytes, bytes] | bytes],
-    decrypt_func: Callable[[bytes, bytes, bytes, bytes | None], bytes],
-    key: bytes,
-    nonce_or_iv: bytes,
-) -> Tuple[int, int, bytes, bytes | None]:
-    """Perform a single encrypt/decrypt cycle and return timings.
-
-    Returns ``(enc_ns, dec_ns, ciphertext, tag)`` where *tag* is ``None``
-    for CBC.
-    """
-    # ---- encryption timing ------------------------------------------------
-    start_enc = time.perf_counter_ns()
-    if mode == "gcm":
-        ciphertext, tag = encrypt_func(key, nonce_or_iv, plaintext)
-    else:  # cbc
-        ciphertext = encrypt_func(key, nonce_or_iv, plaintext)  # type: ignore[arg-type]
-        tag = None
-    end_enc = time.perf_counter_ns()
-    enc_ns = end_enc - start_enc
-
-    # ---- decryption timing ------------------------------------------------
-    start_dec = time.perf_counter_ns()
-    if mode == "gcm":
-        # type: ignore[arg-type]
-        decrypted = decrypt_func(key, nonce_or_iv, ciphertext, tag)  # type: ignore[arg-type]
-    else:
-        decrypted = decrypt_func(key, nonce_or_iv, ciphertext)  # type: ignore[arg-type]
-    end_dec = time.perf_counter_ns()
-    dec_ns = end_dec - start_dec
-
-    # Verify correctness (outside timing)
-    if decrypted != plaintext:
-        raise AssertionError("Decryption output does not match original plaintext")
-
-    return enc_ns, dec_ns, ciphertext, tag
-
 
 def run_benchmark(
     repeats: int = 30,
-    output_path: str | None = None,
+    warmup_iterations: int = 2,
+    output_path: str | Path | None = None,
 ) -> List[BenchmarkResult]:
-    """Execute the benchmark.
+    """Execute the AES benchmark experiment and persist observations to CSV.
 
     Parameters
     ----------
     repeats:
         Number of repetitions per (mode, size, operation) configuration.
+        Default is 30, producing 2 * 3 * 30 * 2 = 360 observations.
+    warmup_iterations:
+        Number of untimed warm-up cycles executed before timing each configuration.
     output_path:
-        Destination CSV file.  If ``None`` a default
-        ``benchmarks/results/benchmark_results.csv`` is used.
+        Destination CSV path. If None, defaults to
+        benchmarks/results/benchmark_results.csv.
 
     Returns
     -------
     List[BenchmarkResult]
-        Collected observations; also written to the CSV.
+        All collected observations.
     """
-    sizes = [1024, 1024 * 1024, 10 * 1024 * 1024]
-    modes = ["gcm", "cbc"]
+    if not isinstance(repeats, int) or isinstance(repeats, bool):
+        raise TypeError(f"repeats must be an integer; got {type(repeats).__name__}")
+    if repeats <= 0:
+        raise ValueError(f"repeats must be a positive integer; got {repeats}")
+    if not isinstance(warmup_iterations, int) or isinstance(warmup_iterations, bool):
+        raise TypeError(f"warmup_iterations must be an integer; got {type(warmup_iterations).__name__}")
+    if warmup_iterations < 0:
+        raise ValueError(f"warmup_iterations cannot be negative; got {warmup_iterations}")
 
-    # Resolve output location and ensure directory exists.
     if output_path is None:
-        output_path = os.path.join("benchmarks", "results", "benchmark_results.csv")
-    out_file = Path(output_path)
+        out_file = Path("benchmarks") / "results" / "benchmark_results.csv"
+    else:
+        out_file = Path(output_path)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     results: List[BenchmarkResult] = []
 
-    # Gather static environment metadata once.
     env_meta = dict(
         python_version=sys.version.replace("\n", " ").strip(),
         os=platform.platform(),
+        cpu=get_cpu_info(),
         cpu_count=os.cpu_count(),
         cryptography_version=__import__("cryptography").__version__,
-        openssl_version=ssl.OPENSSL_VERSION,
+        openssl_version=get_cryptography_openssl_version(),
+        run_parameters=f"repeats={repeats};warmup={warmup_iterations}",
+        timing_boundary=TIMING_BOUNDARY_DEF,
     )
 
-    for mode in modes:
-        for size in sizes:
+    for mode in BENCHMARK_MODES:
+        for size in BENCHMARK_SIZES:
             plaintext = _deterministic_fixture(size)
-            # Generate fresh key and nonce/IV for each repetition – the cost of
-            # generation is deliberately excluded from timing by performing it
-            # before the loop.
-            for i in range(repeats):
-                if mode == "gcm":
-                    key = generate_gcm_dek()
-                    nonce = generate_gcm_nonce()
-                    encrypt_fn = lambda k, n, p: encrypt_gcm(k, n, p)
-                    # decrypt_gcm expects (dek, nonce, ciphertext, tag)
-                    decrypt_fn = decrypt_gcm
-                else:  # cbc
-                    key = generate_cbc_dek()
-                    nonce = generate_cbc_iv()
-                    encrypt_fn = lambda k, iv, p: encrypt_cbc(k, iv, p)
-                    decrypt_fn = decrypt_cbc
 
-                enc_ns, dec_ns, _, _ = _run_one(
-                    mode,
-                    plaintext,
-                    encrypt_fn,
-                    decrypt_fn,
-                    key,
-                    nonce,
-                )
+            # 1. Untimed round-trip correctness validation before collecting measurements
+            if mode == "gcm":
+                v_key = generate_gcm_dek()
+                v_nonce = generate_gcm_nonce()
+                v_ct, v_tag = encrypt_gcm(v_key, v_nonce, plaintext)
+                v_rec = decrypt_gcm(v_key, v_nonce, v_ct, v_tag)
+            else:
+                v_key = generate_cbc_dek()
+                v_iv = generate_cbc_iv()
+                v_ct = encrypt_cbc(v_key, v_iv, plaintext)
+                v_rec = decrypt_cbc(v_key, v_iv, v_ct)
+
+            if v_rec != plaintext:
+                raise AssertionError(f"Pre-measurement validation failed for mode={mode}, size={size}")
+
+            # 2. Untimed warm-up iterations
+            for _ in range(warmup_iterations):
+                if mode == "gcm":
+                    w_key, w_nonce = generate_gcm_dek(), generate_gcm_nonce()
+                    w_ct, w_tag = encrypt_gcm(w_key, w_nonce, plaintext)
+                    _ = decrypt_gcm(w_key, w_nonce, w_ct, w_tag)
+                else:
+                    w_key, w_iv = generate_cbc_dek(), generate_cbc_iv()
+                    w_ct = encrypt_cbc(w_key, w_iv, plaintext)
+                    _ = decrypt_cbc(w_key, w_iv, w_ct)
+
+            # 3. Timed observations with precomputed decryption inputs and order alternation
+            for i in range(repeats):
+                # Prepare encryption inputs (independent key and IV/nonce)
+                if mode == "gcm":
+                    enc_key = generate_gcm_dek()
+                    enc_iv_or_nonce = generate_gcm_nonce()
+                else:
+                    enc_key = generate_cbc_dek()
+                    enc_iv_or_nonce = generate_cbc_iv()
+
+                # Prepare valid decryption inputs in advance before timed decryption
+                if mode == "gcm":
+                    dec_key = generate_gcm_dek()
+                    dec_iv_or_nonce = generate_gcm_nonce()
+                    dec_ct, dec_tag = encrypt_gcm(dec_key, dec_iv_or_nonce, plaintext)
+                else:
+                    dec_key = generate_cbc_dek()
+                    dec_iv_or_nonce = generate_cbc_iv()
+                    dec_ct = encrypt_cbc(dec_key, dec_iv_or_nonce, plaintext)
+                    dec_tag = None
+
+                # Balanced / alternating measurement order to reduce fixed-order bias
+                if i % 2 == 0:
+                    # Encrypt first
+                    t0 = time.perf_counter_ns()
+                    if mode == "gcm":
+                        _ = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
+                    else:
+                        _ = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
+                    t1 = time.perf_counter_ns()
+                    enc_elapsed_ns = t1 - t0
+
+                    # Decrypt second
+                    t2 = time.perf_counter_ns()
+                    if mode == "gcm":
+                        rec = decrypt_gcm(dec_key, dec_iv_or_nonce, dec_ct, dec_tag)
+                    else:
+                        rec = decrypt_cbc(dec_key, dec_iv_or_nonce, dec_ct)
+                    t3 = time.perf_counter_ns()
+                    dec_elapsed_ns = t3 - t2
+                else:
+                    # Decrypt first
+                    t0 = time.perf_counter_ns()
+                    if mode == "gcm":
+                        rec = decrypt_gcm(dec_key, dec_iv_or_nonce, dec_ct, dec_tag)
+                    else:
+                        rec = decrypt_cbc(dec_key, dec_iv_or_nonce, dec_ct)
+                    t1 = time.perf_counter_ns()
+                    dec_elapsed_ns = t1 - t0
+
+                    # Encrypt second
+                    t2 = time.perf_counter_ns()
+                    if mode == "gcm":
+                        _ = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
+                    else:
+                        _ = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
+                    t3 = time.perf_counter_ns()
+                    enc_elapsed_ns = t3 - t2
+
+                # Post-timing untimed verification
+                if rec != plaintext:
+                    raise AssertionError(f"Decryption mismatch at repeat {i} for mode={mode}, size={size}")
 
                 results.append(
                     BenchmarkResult(
@@ -213,8 +284,8 @@ def run_benchmark(
                         operation="encrypt",
                         size_bytes=size,
                         repeat=i,
-                        elapsed_ns=enc_ns,
-                        **env_meta,  # type: ignore[arg-type]
+                        elapsed_ns=enc_elapsed_ns,
+                        **env_meta,
                     )
                 )
                 results.append(
@@ -223,12 +294,11 @@ def run_benchmark(
                         operation="decrypt",
                         size_bytes=size,
                         repeat=i,
-                        elapsed_ns=dec_ns,
-                        **env_meta,  # type: ignore[arg-type]
+                        elapsed_ns=dec_elapsed_ns,
+                        **env_meta,
                     )
                 )
 
-    # Write CSV – include a header row.
     header = [
         "mode",
         "operation",
@@ -237,11 +307,14 @@ def run_benchmark(
         "elapsed_ns",
         "python_version",
         "os",
+        "cpu",
         "cpu_count",
         "cryptography_version",
         "openssl_version",
+        "run_parameters",
+        "timing_boundary",
     ]
-    with out_file.open("w", newline="") as fh:
+    with out_file.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(header)
         for r in results:
@@ -251,11 +324,7 @@ def run_benchmark(
 
 
 def main() -> None:
-    """Entry‑point for manual execution.
-
-    The function simply runs ``run_benchmark`` with the default configuration
-    and prints a short summary.
-    """
+    """CLI entry point for running the AES benchmark runner."""
     start = time.perf_counter()
     results = run_benchmark()
     duration = time.perf_counter() - start
@@ -264,6 +333,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Suppress noisy library warnings that are unrelated to the benchmark.
     warnings.filterwarnings("ignore", category=UserWarning)
     main()
