@@ -130,3 +130,4 @@ def test_encrypt_key_recoverability_gcm_and_cbc(tmp_path: Path, mode: str):
 
     decrypt_file(dst, rec, key_file_path=key, require_mode=mode)
     assert rec.read_bytes() == payload
+
