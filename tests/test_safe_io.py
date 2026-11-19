@@ -1,6 +1,9 @@
 """Tests for safe file staging, atomic commit, and no-overwrite guarantees."""
 
+import errno
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 from securevault.file_service import (
@@ -10,6 +13,7 @@ from securevault.file_service import (
 )
 from securevault.errors import (
     FileExistsSecurityError,
+    FileServiceError,
     SameFileError,
     AuthenticationError,
 )
@@ -71,4 +75,115 @@ def test_io_01_permissions_owner_only(tmp_path: Path):
     if os.name == "posix":
         stat_mode = target.stat().st_mode & 0o777
         assert stat_mode == 0o600
+
+
+def test_safe_write_unsupported_hardlinks_fails_closed(tmp_path: Path, monkeypatch):
+    """C01 Regression: When hard links are unsupported, fail closed with FileServiceError."""
+    def fake_link(src, dst):
+        raise OSError(errno.ENOTSUP, "Operation not supported on filesystem")
+
+    monkeypatch.setattr(os, "link", fake_link)
+
+    target = tmp_path / "unsupported_link.bin"
+    with pytest.raises(FileServiceError, match="Atomic exclusive publication unsupported or failed"):
+        _safe_write_bytes(target, b"payload", overwrite=False)
+
+    # Destination MUST NOT be created (no fallback to clobbering replace)
+    assert not target.exists()
+    # Temporary staging file MUST be cleaned up
+    assert len(list(tmp_path.glob(".svlt_tmp_*"))) == 0
+
+
+def test_safe_write_existing_destination_rejected_at_link(tmp_path: Path, monkeypatch):
+    """C01 Regression: Race condition where destination appears before link must raise FileExistsSecurityError."""
+    # Simulate race condition: target was not there at initial check, but exists at link()
+    target = tmp_path / "race_target.bin"
+
+    # Make initial target.exists() return False once, then True
+    orig_exists = Path.exists
+    call_count = 0
+
+    def mock_exists(self):
+        nonlocal call_count
+        if self == target:
+            call_count += 1
+            if call_count == 1:
+                return False  # Pass the preliminary exists check
+        return orig_exists(self)
+
+    # Create target so os.link will fail with FileExistsError
+    target.write_bytes(b"prior content")
+    monkeypatch.setattr(Path, "exists", mock_exists)
+
+    with pytest.raises(FileExistsSecurityError):
+        _safe_write_bytes(target, b"new content", overwrite=False)
+
+    assert target.read_bytes() == b"prior content"
+    assert len(list(tmp_path.glob(".svlt_tmp_*"))) == 0
+
+
+def test_safe_write_concurrent_writers_exclusive(tmp_path: Path):
+    """C01 Regression: Multiple concurrent writers contending for the same non-overwrite destination."""
+    target = tmp_path / "concurrent.bin"
+    num_threads = 10
+    barrier = threading.Barrier(num_threads)
+    results = {"success": 0, "rejected": 0}
+    lock = threading.Lock()
+
+    def worker(worker_id: int):
+        data = f"worker_{worker_id}_data".encode("ascii")
+        barrier.wait()
+        try:
+            _safe_write_bytes(target, data, overwrite=False)
+            with lock:
+                results["success"] += 1
+        except FileExistsSecurityError:
+            with lock:
+                results["rejected"] += 1
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_threads)]
+        for f in futures:
+            f.result()
+
+    # Exactly one thread succeeds, all others are rejected safely
+    assert results["success"] == 1
+    assert results["rejected"] == num_threads - 1
+    assert target.exists()
+    assert len(list(tmp_path.glob(".svlt_tmp_*"))) == 0
+
+
+def test_safe_write_publication_failure_cleans_up_staging(tmp_path: Path, monkeypatch):
+    """C01 Regression: Unexpected I/O error during link fails closed and cleans up staging file."""
+    def fake_link(src, dst):
+        raise OSError(errno.EIO, "Simulated disk I/O error")
+
+    monkeypatch.setattr(os, "link", fake_link)
+
+    target = tmp_path / "io_fail.bin"
+    with pytest.raises(FileServiceError, match="Atomic exclusive publication unsupported or failed"):
+        _safe_write_bytes(target, b"data", overwrite=False)
+
+    assert not target.exists()
+    assert len(list(tmp_path.glob(".svlt_tmp_*"))) == 0
+
+
+def test_safe_write_post_publication_cleanup_failure_preserves_target(tmp_path: Path, monkeypatch):
+    """C01 Regression: Failure to remove staging link after successful publication preserves target."""
+    orig_unlink = Path.unlink
+
+    def mock_unlink(self, *args, **kwargs):
+        if ".svlt_tmp_" in str(self):
+            raise OSError(errno.EACCES, "Simulated permission error on unlink")
+        return orig_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", mock_unlink)
+
+    target = tmp_path / "published.bin"
+    # Should not raise exception because publication succeeded
+    _safe_write_bytes(target, b"vital data", overwrite=False)
+
+    # Target file MUST exist with correct content
+    assert target.exists()
+    assert target.read_bytes() == b"vital data"
 

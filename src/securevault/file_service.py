@@ -73,6 +73,7 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
         delete=False,
     )
     tmp_path = Path(tmp_file.name)
+    published = False
     try:
         tmp_file.write(data)
         tmp_file.flush()
@@ -86,20 +87,30 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
             pass  # Fallback gracefully on filesystems without POSIX chmod
 
         if not overwrite:
-            # Race-safe atomic creation: os.link fails with FileExistsError if target exists
+            # Race-safe atomic exclusive publication using hard link
             try:
                 os.link(tmp_path, target)
+                published = True
+            except FileExistsError as err:
+                raise FileExistsSecurityError(f"Target file already exists: {target}") from err
+            except OSError as err:
+                # Fail closed: never fall back to clobbering replace when overwrite=False
+                raise FileServiceError(
+                    f"Atomic exclusive publication unsupported or failed on this filesystem: {err}"
+                ) from err
+
+            # Post-publication cleanup: target is durably published; remove staging link
+            try:
                 tmp_path.unlink()
-            except (FileExistsError, OSError) as err:
-                if isinstance(err, FileExistsError) or target.exists():
-                    raise FileExistsSecurityError(f"Target file already exists: {target}")
-                # If hard linking is not supported across filesystem or platform, fallback to atomic replace
-                os.replace(tmp_path, target)
+            except OSError:
+                # Cleanup failure of staging link must not compromise or remove published target
+                pass
         else:
             os.replace(tmp_path, target)
+            published = True
     except Exception:
-        # Guarantee cleanup of temporary staged output on any failure
-        if tmp_path.exists():
+        # Guarantee cleanup of temporary staged output on any publication failure
+        if not published and tmp_path.exists():
             try:
                 tmp_path.unlink()
             except OSError:
