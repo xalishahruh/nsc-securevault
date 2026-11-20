@@ -1,0 +1,65 @@
+"""Password key derivation for the protected vault keyring."""
+
+from dataclasses import dataclass
+
+from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+
+from securevault.errors import KeyringError
+
+SALT_SIZE = 16
+UNLOCK_KEY_SIZE = 32
+MIN_MEMORY_KIB = 8192
+MAX_MEMORY_KIB = 262144
+MIN_ITERATIONS = 1
+MAX_ITERATIONS = 10
+MIN_PARALLELISM = 1
+MAX_PARALLELISM = 8
+MAX_PASSWORD_BYTES = 1024
+
+
+@dataclass(frozen=True)
+class KDFParameters:
+    memory_cost: int = 65536
+    iterations: int = 3
+    parallelism: int = 4
+
+    def validate(self) -> None:
+        if not MIN_MEMORY_KIB <= self.memory_cost <= MAX_MEMORY_KIB:
+            raise KeyringError("Argon2id memory cost is outside the supported bounds.")
+        if not MIN_ITERATIONS <= self.iterations <= MAX_ITERATIONS:
+            raise KeyringError("Argon2id iteration count is outside the supported bounds.")
+        if not MIN_PARALLELISM <= self.parallelism <= MAX_PARALLELISM:
+            raise KeyringError("Argon2id parallelism is outside the supported bounds.")
+
+
+DEFAULT_KDF_PARAMETERS = KDFParameters()
+
+
+def password_bytes(password: str | bytes) -> bytes:
+    if isinstance(password, str):
+        encoded = password.encode("utf-8")
+    elif isinstance(password, bytes):
+        encoded = password
+    else:
+        raise TypeError("Password must be str or bytes.")
+    if not encoded or len(encoded) > MAX_PASSWORD_BYTES:
+        raise KeyringError("Password must contain between 1 and 1024 UTF-8 bytes.")
+    return encoded
+
+
+def derive_unlock_key(
+    password: str | bytes,
+    salt: bytes,
+    parameters: KDFParameters = DEFAULT_KDF_PARAMETERS,
+) -> bytes:
+    """Derive the 32-byte unlock key using cryptography's Argon2id API."""
+    parameters.validate()
+    if not isinstance(salt, bytes) or len(salt) != SALT_SIZE:
+        raise KeyringError(f"Argon2id salt must be exactly {SALT_SIZE} bytes.")
+    return Argon2id(
+        salt=salt,
+        length=UNLOCK_KEY_SIZE,
+        iterations=parameters.iterations,
+        lanes=parameters.parallelism,
+        memory_cost=parameters.memory_cost,
+    ).derive(password_bytes(password))

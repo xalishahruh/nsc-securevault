@@ -29,7 +29,7 @@ SecureVault is an engineering-grade Python file-encryption application implement
 
 - **Python Runtime:** Python 3.10 or newer (tested on Python 3.15.2, macOS arm64)
 - **Supported Platforms:** macOS, Linux
-- **Cryptographic Engine:** `cryptography >= 41.0.0` (backed by OpenSSL)
+- **Cryptographic Engine:** `cryptography >= 44.0.0` (backed by OpenSSL; Argon2id must be available)
 
 ```bash
 # 1. Clone repository

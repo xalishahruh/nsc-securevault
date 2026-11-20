@@ -9,7 +9,7 @@ description = "SecureVault: AES-256-GCM vs AES-256-CBC file encryption and exper
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "cryptography>=41.0.0",
+    "cryptography>=44.0.0",
 ]
 
 [project.optional-dependencies]

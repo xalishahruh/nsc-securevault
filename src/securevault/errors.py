@@ -23,6 +23,10 @@ class InvalidKeyError(CryptoError):
     """Raised when a key is malformed, invalid in length, or of wrong type."""
 
 
+class KeyringError(CryptoError):
+    """Raised when a protected keyring is malformed or cannot be unlocked."""
+
+
 class ModeMismatchError(CryptoError):
     """Raised when caller requested mode does not match the file or key cipher mode."""
 
