@@ -45,6 +45,7 @@ Order and Bias Controls:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import os
@@ -56,7 +57,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 from securevault.crypto.cbc import (
     encrypt_cbc,
@@ -357,15 +358,37 @@ def run_benchmark(
     return results
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point for running the AES benchmark runner."""
+    parser = argparse.ArgumentParser(description="Run SecureVault AES benchmark experiment.")
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
+        help="Destination CSV path (default: benchmarks/results/benchmark_results.csv)",
+    )
+    parser.add_argument(
+        "--repeats",
+        "-r",
+        type=int,
+        default=30,
+        help="Number of repetitions per configuration (default: 30)",
+    )
+    args = parser.parse_args(argv)
     start = time.perf_counter()
-    results = run_benchmark()
+    out_dest = args.output or Path("benchmarks") / "results" / "benchmark_results.csv"
+    try:
+        results = run_benchmark(repeats=args.repeats, output_path=args.output)
+    except FileExistsError as err:
+        print(f"benchmark_modes: error: {err}", file=sys.stderr)
+        return 1
     duration = time.perf_counter() - start
     print(f"Benchmark completed: {len(results)} observations in {duration:.2f}s")
-    print(f"CSV written to {os.path.abspath('benchmarks/results/benchmark_results.csv')}")
+    print(f"CSV written to {os.path.abspath(out_dest)}")
+    return 0
 
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
-    main()
+    raise SystemExit(main())

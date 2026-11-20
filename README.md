@@ -2,7 +2,7 @@
 
 **Network Security and Cryptography (6COSC033C) — CW1 Practical Project**
 
-SecureVault is a Python file-encryption application implementing and comparing **AES-256-GCM** (authenticated encryption) and **AES-256-CBC** (confidentiality only) for secure file storage, aligned with the academic research question:
+SecureVault is an engineering-grade Python file-encryption application implementing and empirically comparing **AES-256-GCM** (authenticated encryption) and **AES-256-CBC** (confidentiality only) for secure file storage. It addresses the coursework research question:
 
 > *To what extent do AES-GCM and AES-CBC differ in their security properties, ciphertext-integrity protection, tamper-handling behavior, and encryption/decryption performance when implemented for secure file storage across varying file sizes?*
 
@@ -13,40 +13,41 @@ SecureVault is a Python file-encryption application implementing and comparing *
 1. [Requirements and Installation](#1-requirements-and-installation)  
 2. [Encrypting and Decrypting Files](#2-encrypting-and-decrypting-files)  
 3. [End-to-End Demonstration](#3-end-to-end-demonstration)  
-4. [Security Limitations](#4-security-limitations)  
-5. [Running Automated Tests](#5-running-automated-tests)  
-6. [Security Experiments](#6-security-experiments)  
-7. [Benchmarks](#7-benchmarks)  
-8. [Statistical Analysis](#8-statistical-analysis)  
-9. [Generating Figures](#9-generating-figures)  
-10. [Architecture and File Formats](#10-architecture-and-file-formats)  
-11. [Coursework Evidence Locations](#11-coursework-evidence-locations)
+4. [Cryptographic Properties and Security Analysis](#4-cryptographic-properties-and-security-analysis)  
+5. [Automated Test Suite](#5-automated-test-suite)  
+6. [Controlled Security Experiments](#6-controlled-security-experiments)  
+7. [Performance Benchmarking and Reproduction](#7-performance-benchmarking-and-reproduction)  
+8. [Statistical Analysis and Comparison](#8-statistical-analysis-and-comparison)  
+9. [Report Figures](#9-report-figures)  
+10. [Container Layout and Key Formats](#10-container-layout-and-key-formats)  
+11. [Coursework Criteria Evidence Mapping (MC1–MC7)](#11-coursework-criteria-evidence-mapping-mc1mc7)  
+12. [Evidence Inventory and Platform Limitations](#12-evidence-inventory-and-platform-limitations)
 
 ---
 
 ## 1. Requirements and Installation
 
-**Python:** 3.10 or newer (uses PEP 604 union annotations)  
-**Operating systems:** macOS, Linux (tested on macOS 26.6.2, arm64)  
-**Dependencies:** `cryptography >= 41.0.0` (AES primitives via OpenSSL)
+- **Python Runtime:** Python 3.10 or newer (tested on Python 3.15.2, macOS arm64)
+- **Supported Platforms:** macOS, Linux
+- **Cryptographic Engine:** `cryptography >= 41.0.0` (backed by OpenSSL)
 
 ```bash
-# Clone repository
-git clone https://github.com/xalishahruh/nsc-securevault
+# 1. Clone repository
+git clone https://github.com/xalishahruh/nsc-securevault.git
 cd nsc-securevault
 
-# Create virtual environment
+# 2. Create and activate a clean virtual environment
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install application and test dependencies
+# 3. Install SecureVault with test dependencies
 pip install -e ".[test]"
 
-# Optional: install matplotlib for figure generation
+# 4. Optional: install matplotlib for figure regeneration
 pip install matplotlib
 ```
 
-**Verify installation:**
+Verify CLI installation:
 ```bash
 securevault --help
 # or
@@ -57,374 +58,286 @@ python -m securevault --help
 
 ## 2. Encrypting and Decrypting Files
 
-### Encrypt with AES-256-GCM
-
+### Encrypt with AES-256-GCM (Authenticated Encryption)
 ```bash
 securevault encrypt \
   --mode gcm \
-  --input my_document.pdf \
-  --output my_document.svlt \
-  --key-output my_document.svkey
+  --input sample.txt \
+  --output sample.svlt \
+  --key-output sample.svkey
 ```
 
-### Encrypt with AES-256-CBC
-
+### Encrypt with AES-256-CBC (Confidentiality Only)
 ```bash
 securevault encrypt \
   --mode cbc \
-  --input my_document.pdf \
-  --output my_document_cbc.svlt \
-  --key-output my_document_cbc.svkey
+  --input sample.txt \
+  --output sample_cbc.svlt \
+  --key-output sample_cbc.svkey
 ```
 
-### Decrypt
-
+### Decrypt Encrypted Containers
 ```bash
-# GCM — with optional mode enforcement
+# Decrypt AES-GCM with explicit mode policy enforcement
 securevault decrypt \
-  --input my_document.svlt \
-  --output my_document_recovered.pdf \
-  --key-file my_document.svkey \
+  --input sample.svlt \
+  --output sample_recovered.txt \
+  --key-file sample.svkey \
   --require-mode gcm
 
-# CBC
+# Decrypt AES-CBC with explicit mode policy enforcement
 securevault decrypt \
-  --input my_document_cbc.svlt \
-  --output my_document_cbc_recovered.pdf \
-  --key-file my_document_cbc.svkey \
+  --input sample_cbc.svlt \
+  --output sample_cbc_recovered.txt \
+  --key-file sample_cbc.svkey \
   --require-mode cbc
 ```
 
-> **CBC warning:** The CLI always prints a warning when decrypting CBC files:
-> `AES-CBC provides confidentiality only; it provides NO inherent authenticity or integrity verification.`
+> **CBC Security Warning:** Whenever AES-CBC is decrypted, the CLI prints an explicit warning:
+> `[WARNING] Decrypted using AES-CBC. AES-CBC provides confidentiality only; it provides NO inherent authenticity or integrity verification.`
 
-### Inspect container metadata (no key required)
-
+### Inspect Container Metadata (No Key Required)
 ```bash
-securevault inspect --input my_document.svlt
+securevault inspect --input sample.svlt
 ```
+Displays non-secret header fields: magic, version, cipher mode, file UUID, IV/nonce (hex), ciphertext length, and key protection type.
 
-### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--overwrite` | Permit overwriting an existing output file (default: fail safely) |
-| `--require-mode gcm\|cbc` | Reject containers that do not match the expected cipher mode |
+### Command-Line Policy Flags
+| Flag | Behavior |
+|------|----------|
+| `--overwrite` | Permits replacing an existing output file (default is strict no-clobber protection via `os.link`). |
+| `--require-mode gcm\|cbc` | Enforces caller-expected cipher mode; rejects container on mismatch to prevent cipher downgrade. |
 
 ---
 
 ## 3. End-to-End Demonstration
 
-The following reproduces the complete demonstration using the included sample file.
-
+A complete 10-step demonstration is scripted in `scripts/run_demo.py` and can be executed with:
 ```bash
-# 0. Create sample file
-python3 -c "
-content = b'SecureVault Demo File\n' + bytes(range(1024 - 22))
-open('demo/samples/sample.txt', 'wb').write(content)
-"
-
-# 1. Original SHA-256
-shasum -a 256 demo/samples/sample.txt
-
-# 2. GCM encryption
-securevault encrypt --mode gcm \
-  --input demo/samples/sample.txt \
-  --output demo/gcm/sample.svlt \
-  --key-output demo/gcm/sample.svkey
-
-# 3. GCM inspect
-securevault inspect --input demo/gcm/sample.svlt
-
-# 4. GCM decrypt
-securevault decrypt \
-  --input demo/gcm/sample.svlt \
-  --output demo/gcm/sample_recovered.txt \
-  --key-file demo/gcm/sample.svkey
-
-# 5. Exact-byte verification (hashes must match)
-shasum -a 256 demo/samples/sample.txt demo/gcm/sample_recovered.txt
-
-# 6. CBC encryption
-securevault encrypt --mode cbc \
-  --input demo/samples/sample.txt \
-  --output demo/cbc/sample.svlt \
-  --key-output demo/cbc/sample.svkey
-
-# 7. CBC decrypt
-securevault decrypt \
-  --input demo/cbc/sample.svlt \
-  --output demo/cbc/sample_recovered.txt \
-  --key-file demo/cbc/sample.svkey
-
-# 8. Exact-byte verification (hashes must match)
-shasum -a 256 demo/samples/sample.txt demo/cbc/sample_recovered.txt
-
-# 9. Wrong key failure
-securevault decrypt \
-  --input demo/gcm/sample.svlt \
-  --output /tmp/wrong_key_out.bin \
-  --key-file demo/cbc/sample.svkey
-# Expected: Error [InvalidKeyError]: Key file ID ... does not match ...
-
-# 10. No-clobber protection
-securevault encrypt --mode gcm \
-  --input demo/samples/sample.txt \
-  --output demo/gcm/sample.svlt \
-  --key-output demo/gcm/sample.svkey
-# Expected: Error [FileExistsSecurityError]: Destination file already exists
+python scripts/run_demo.py
 ```
 
-**Observed outputs (Nov 2026, macOS arm64):**
-
-| Step | Expected Result | Observed |
-|------|----------------|----------|
-| SHA-256 original = GCM-recovered | Identical hashes | ✓ `5c3fcab4b8760ac3...` |
-| SHA-256 original = CBC-recovered | Identical hashes | ✓ `5c3fcab4b8760ac3...` |
-| Wrong key | `InvalidKeyError` | ✓ Exit 2, no output file |
-| Duplicate encrypt | `FileExistsSecurityError` | ✓ Exit 2, existing files preserved |
-
----
-
-## 4. Security Limitations
-
-### AES-256-GCM
-
-- Provides authenticated encryption (AEAD): confidentiality + integrity + authenticity.
-- The 48-byte immutable container header is bound as GCM authenticated associated data (AAD).
-- Any modification to ciphertext, authentication tag, or header bytes raises `AuthenticationError` before any plaintext is released.
-- Nonce uniqueness is maintained by generating a fresh 12-byte CSPRNG nonce per encryption.
-- **Nonce reuse across different keys is harmless; nonce reuse with the same key would be catastrophic.** The current design generates a fresh 256-bit DEK per encryption, making same-key reuse structurally impossible.
-
-### AES-256-CBC
-
-- Provides **confidentiality only**. There is **no inherent ciphertext integrity or authenticity**.
-- **PKCS#7 padding validity is NOT cryptographic authentication.** A tampered ciphertext that happens to produce valid padding will be accepted silently.
-- IV modification corrupts only the first 16-byte plaintext block; all subsequent blocks decrypt correctly.
-- Ciphertext modification in block *n* garbles block *n* and predictably bit-flips block *n+1*.
-- Applications requiring integrity over CBC-encrypted data must add external authentication (HMAC, MAC).
-
-### Key Management
-
-- DEKs are 256-bit values generated by the OS CSPRNG (`os.urandom`) once per encryption.
-- The `.svkey` file stores the DEK in plaintext. It must be treated as a secret — stored separately from the container, with file permissions 0600.
-- Key file and container carry a shared 16-byte file ID and cipher-mode identifier. The key provider verifies both before decryption.
-- **There is no password-based key derivation or key-wrapping in the current implementation.** The external key design is an engineering baseline; vault key lifecycle with Argon2id/AES-KWP is a future milestone.
-
-### File System Safety
-
-- All output is staged in a temporary file, flushed with `os.fsync`, and published via `os.link()` for atomic, exclusive creation.
-- Existing destination files are never overwritten unless `--overwrite` is explicitly passed.
-- Symlinks in source or destination paths are rejected.
-- Failed GCM authentication never publishes plaintext to disk.
+### Demonstration Steps and Expected Behaviors:
+1. **Input File Selection:** 1,024-byte deterministic sample payload (`demo/samples/sample.txt`), baseline SHA-256 recorded.
+2. **GCM Encryption:** Generates fresh 256-bit DEK and 12-byte nonce; outputs `.svlt` container and 54-byte `.svkey`.
+3. **GCM Decryption:** Verifies 128-bit GHASH tag and header AAD prior to releasing plaintext.
+4. **Exact-Byte Verification (GCM):** SHA-256 hash comparison confirms exact byte-for-byte recovery.
+5. **CBC Encryption:** Generates fresh 256-bit DEK and unpredictable 16-byte IV; applies PKCS#7 padding.
+6. **CBC Decryption:** Validates PKCS#7 unpadding and issues an explicit integrity limitation warning.
+7. **Exact-Byte Verification (CBC):** SHA-256 hash comparison confirms exact byte-for-byte recovery.
+8. **Wrong-Key Handling:** Mismatched key rejected (`InvalidKeyError`, exit code 2); zero plaintext written.
+9. **Tampered Container Handling (GCM):** Modified authentication tag rejected (`AuthenticationError`, exit code 2); zero plaintext written.
+10. **Existing-Output Preservation:** Duplicate encryption destination without `--overwrite` fails closed (`FileExistsSecurityError`, exit code 2); existing file preserved.
 
 ---
 
-## 5. Running Automated Tests
+## 4. Cryptographic Properties and Security Analysis
+
+### AES-256-GCM (Galois/Counter Mode)
+- **Security Goal:** Authenticated Encryption with Associated Data (AEAD) providing confidentiality, ciphertext integrity, and origin authenticity.
+- **Key & Nonce Lifecycle:** Fresh 256-bit DEK via `os.urandom(32)` per encryption operation. Fresh 96-bit CSPRNG nonce via `os.urandom(12)`.
+- **Nonce Collision Analysis:** With 96-bit random nonces, birthday collision probability reaches $2^{-32}$ after approximately $2^{48}$ encryptions under the same key. SecureVault enforces a fresh random 256-bit DEK per file encryption, preventing multiple encryptions under any single key and neutralizing cross-file nonce collision risks.
+- **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Any modification to header metadata invalidates the 128-bit GHASH tag.
+- **Authentication Guarantee:** Tag forgery probability is bounded by $2^{-128}$ under standard cryptographic assumptions. Decryption strictly validates the authentication tag before writing or returning plaintext.
+
+### AES-256-CBC (Cipher Block Chaining)
+- **Security Goal:** Confidentiality only against chosen-plaintext attacks (IND-CPA), conditioned on an unpredictable initialization vector (IV).
+- **Integrity Limitation:** AES-CBC provides **no inherent integrity or authenticity**. Modifying a ciphertext block predictably alters plaintext bits in the subsequent block.
+- **Padding Semantics:** PKCS#7 padding aligns plaintext to 16-byte block boundaries. **Valid padding does not guarantee authenticity.** A random corrupted final block has approximately a $1/256$ probability of ending in `0x01` (valid padding). When non-last ciphertext blocks are modified, the final block padding remains entirely intact, and decryption silently succeeds while returning corrupted plaintext (empirically confirmed in experiment `CBC-05`).
+
+### Safe File Publication (Atomic No-Clobber)
+- File writes stage data into owner-restricted temporary files (`0600`), flush buffers, and call `os.fsync`.
+- Publication uses `os.link()` to achieve exclusive, atomic destination creation on supported filesystems. If the destination exists, `FileExistsSecurityError` is raised. The implementation never falls back to an unsafe overwriting replace when `overwrite=False`.
+
+---
+
+## 5. Automated Test Suite
+
+The test suite contains 110 automated pytest tests covering functional operations, security boundaries, container parsing, and statistical calculations:
 
 ```bash
-# Full test suite (110 tests)
+# Run the complete test suite
 python -m pytest -v
-
-# Targeted module tests
-python -m pytest tests/test_gcm.py tests/test_cbc.py -v
-python -m pytest tests/test_tamper.py -v
-python -m pytest tests/test_safe_io.py -v
-python -m pytest tests/test_functional_e2e.py -v
-python -m pytest tests/test_benchmark_modes.py tests/test_benchmark_statistics.py -v
 ```
 
-**Test coverage:**
-
-| Module | Tests | Key Scenarios |
-|--------|-------|---------------|
-| `test_gcm.py` | 12 | GCM roundtrip, tampering, key validation |
-| `test_cbc.py` | 10 | CBC roundtrip, padding, key validation |
-| `test_container.py` | 14 | Header layout, boundary enforcement, malformed rejection |
-| `test_tamper.py` | 10 | GCM auth failure, CBC lack-of-integrity, mode downgrade |
-| `test_functional_e2e.py` | 12 | Byte-exact roundtrip across sizes and formats |
-| `test_safe_io.py` | 20 | No-clobber, atomic publication, cleanup, concurrent writers |
-| `test_key_provider.py` | 8 | Key association, mode mismatch, key record format |
-| `test_key_recoverability.py` | 10 | Mandatory key destination, overwrite rejection |
-| `test_benchmark_modes.py` | 5 | Observation count, CSV schema, parameter validation |
-| `test_benchmark_statistics.py` | 9 | Statistical summary, comparison, error handling |
+### Test Suite Structure:
+- `tests/test_gcm.py` (12 tests): AES-GCM round-trips across edge sizes, wrong-key rejection, ciphertext/tag/AAD tamper detection.
+- `tests/test_cbc.py` (10 tests): AES-CBC round-trips, PKCS#7 padding boundaries, corrupted IV/ciphertext behavior.
+- `tests/test_container.py` (14 tests): Binary `.svlt` v1 header serialization, strict field validation, truncation and malformed size rejection.
+- `tests/test_tamper.py` (10 tests): Negative security scenarios, GCM header/tag rejection, CBC bit-flip corruption without authentication, cipher mode downgrade prevention.
+- `tests/test_functional_e2e.py` (12 tests): End-to-end file encryption/decryption across diverse file formats (PDF, JPEG, MP4, TXT) and payload boundaries (0B, 1B, 15B, 16B, 17B, 31B, 32B, 64B, 1KiB, 64KiB).
+- `tests/test_safe_io.py` (20 tests): Exclusive staging, `os.link` atomic creation, owner permissions (`0600`), symlink rejection, concurrent writer mutual exclusion.
+- `tests/test_key_provider.py` (8 tests): External `.svkey` record parsing, file ID association checks, cipher mode validation.
+- `tests/test_key_recoverability.py` (10 tests): Mandatory key destination enforcement, rollback safety, refusal to unlink keys on container publication failure.
+- `tests/test_benchmark_modes.py` (5 tests): Benchmark matrix schema, 360-observation verification, parameter validation, artifact preservation.
+- `tests/test_benchmark_statistics.py` (9 tests): Statistical metric verification, formula correctness, strict validation of corrupted/incomplete datasets.
 
 ---
 
-## 6. Security Experiments
+## 6. Controlled Security Experiments
 
-Implements 10 controlled security experiments:
-
-- **GCM-01 to GCM-05:** Ciphertext modification, tag modification, header/AAD tamper, wrong key, container truncation.
-- **CBC-01 to CBC-05:** Ciphertext modification, IV modification, wrong key, container truncation, controlled non-last-block corruption.
+The controlled experiment runner (`experiments/security_experiments.py`) executes 10 defined tamper scenarios comparing GCM and CBC.
 
 ```bash
-# Run all experiments
+# Execute security experiments (writes to experiments/results/security_outcomes.csv)
 python -m experiments.security_experiments
-
-# Custom output path
-python -m experiments.security_experiments --output my_results.csv
 ```
 
-Results are written to `experiments/results/security_outcomes.csv`.  
-See `experiments/SECURITY_EXPERIMENTS.md` for the full report with observed vs. expected outcomes.
+### Summary of Observed Outcomes:
 
-**Key results:**
-- GCM: 5/5 tamper cases detected — plaintext never published after any tamper.
-- CBC: 0/5 cryptographic detections — corrupted plaintext accepted silently in 3/5 cases.
+| Experiment ID | Mode | Target Element | Specific Modification | Expected Outcome | Observed Outcome | Plaintext Released? | Integrity Protected? |
+|---|---|---|---|---|---|---|---|
+| **GCM-01** | GCM | Ciphertext | Flip byte at offset 51 | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
+| **GCM-02** | GCM | Auth Tag | Flip last byte of tag | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
+| **GCM-03** | GCM | Header (AAD) | Flip `file_id` byte in header | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
+| **GCM-04** | GCM | Key Material | Random 32-byte DEK | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
+| **GCM-05** | GCM | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **Yes** |
+| **CBC-01** | CBC | Ciphertext | Flip byte in block 1 | Corrupted plaintext | Corrupted plaintext accepted | **Yes** | **No** |
+| **CBC-02** | CBC | IV | Flip byte in IV slot | Corrupted block 0 | Corrupted block 0 accepted | **Yes** | **No** |
+| **CBC-03** | CBC | Key Material | Random 32-byte DEK | `PaddingError` | `PaddingError` (probabilistic) | **No** | **No** (unreliable) |
+| **CBC-04** | CBC | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **Yes** (format-level) |
+| **CBC-05** | CBC | Non-last block CT | Controlled 3-block corruption | Valid PKCS#7 padding | Corrupted plaintext accepted | **Yes** | **No** |
+
+Full analysis and discussion available in `experiments/SECURITY_EXPERIMENTS.md`.
 
 ---
 
-## 7. Benchmarks
+## 7. Performance Benchmarking and Reproduction
 
-Benchmarks compare AES-256-GCM and AES-256-CBC encryption and decryption across three file sizes:
+### Experimental Design
+- **Algorithms:** AES-256-GCM vs AES-256-CBC
+- **Payload Sizes:** 1 KiB (1,024 B), 1 MiB (1,048,576 B), 10 MiB (10,485,760 B)
+- **Operations:** Encryption and Decryption (timed separately)
+- **Repetitions:** 30 per configuration = **360 total timed observations**
+- **Measurement Boundary:** Timed interval strictly isolates the cryptographic primitive call using `time.perf_counter_ns()`. Key/nonce generation, synthetic fixture generation, valid decryption input staging, output verification, and disk I/O are strictly excluded.
+- **Order Balancing:** Alternates encryption-first and decryption-first order across repetitions to mitigate systematic cache ordering bias.
+- **Warm-Up:** 2 untimed warm-up cycles executed prior to measurement per configuration.
 
-| Metric | Value |
-|--------|-------|
-| Sizes | 1 KiB, 1 MiB, 10 MiB |
-| Modes | AES-256-GCM, AES-256-CBC |
-| Operations | Encrypt, Decrypt |
-| Repetitions | 30 per configuration |
-| Total observations | 360 |
-| Timing function | `time.perf_counter_ns()` |
-| Timing scope | Cryptographic API call only (excludes setup, I/O, verification) |
-| Warm-up | 2 untimed cycles per configuration |
-| Order | Alternated per repetition (even: enc→dec; odd: dec→enc) |
-| Fixture | Deterministic (SHA-256 chain from fixed seed) |
-| Keys/IVs | Fresh CSPRNG per repetition |
+### How to Run a Fresh Benchmark (Preserving Existing Evidence)
+To execute a fresh benchmark without overwriting the preserved baseline evidence in `benchmarks/results/`:
 
 ```bash
-# Run benchmark (overwrites existing results CSV)
-python -m benchmarks.benchmark_modes
+# 1. Run benchmark into a fresh directory
+python -m benchmarks.benchmark_modes --output /tmp/fresh_run/benchmark_results.csv --repeats 30
 
-# Results written to benchmarks/results/benchmark_results.csv
+# 2. Run statistical summarizer on the fresh data
+python -m benchmarks.summarize \
+  --input /tmp/fresh_run/benchmark_results.csv \
+  --output-dir /tmp/fresh_run/summary/
 ```
 
-**Performance summary (actual run, macOS arm64, Nov 2026):**
+### Baseline Performance Results (macOS arm64, OpenSSL 4.0.3 Backend):
 
-| Size | Operation | GCM mean (ms) | CBC mean (ms) | GCM vs CBC |
-|------|-----------|--------------|--------------|------------|
-| 1 KiB | Encrypt | 0.00184 | 0.00463 | **−60.2%** |
-| 1 KiB | Decrypt | 0.00184 | 0.00394 | **−53.3%** |
-| 1 MiB | Encrypt | 0.179 | 0.992 | **−82.0%** |
-| 1 MiB | Decrypt | 0.182 | 0.215 | **−15.5%** |
-| 10 MiB | Encrypt | 2.035 | 10.254 | **−80.2%** |
-| 10 MiB | Decrypt | 2.131 | 2.536 | **−16.0%** |
+| Payload Size | Operation | AES-256-GCM Mean (ms) | AES-256-CBC Mean (ms) | GCM Throughput (MiB/s) | CBC Throughput (MiB/s) | Difference (%) |
+|---|---|---|---|---|---|---|
+| **1 KiB** | Encrypt | 0.00184 ± 0.00015 | 0.00463 ± 0.00028 | 530.27 | 211.02 | **−60.20%** |
+| **1 KiB** | Decrypt | 0.00184 ± 0.00032 | 0.00394 ± 0.00099 | 531.08 | 247.93 | **−53.32%** |
+| **1 MiB** | Encrypt | 0.17885 ± 0.01549 | 0.99187 ± 0.02440 | 5,591.32 | 1,008.20 | **−81.97%** |
+| **1 MiB** | Decrypt | 0.18193 ± 0.02629 | 0.21521 ± 0.03505 | 5,496.64 | 4,646.63 | **−15.46%** |
+| **10 MiB** | Encrypt | 2.03487 ± 0.15125 | 10.25413 ± 0.10028 | 4,914.32 | 975.22 | **−80.16%** |
+| **10 MiB** | Decrypt | 2.13081 ± 0.40742 | 2.53635 ± 0.11805 | 4,693.05 | 3,942.67 | **−15.99%** |
 
-> GCM is 50–82% faster on encryption (hardware AES-GCM acceleration on arm64).  
-> GCM is 15–53% faster on decryption.  
-> Performance varies by platform, CPU frequency scaling, and thermal conditions.
+*Algorithmic Discussion:* GCM operates as a stream cipher using counter mode (CTR) for encryption and GHASH for authentication. CTR allows blocks to be computed independently, enabling pipelined block processing in OpenSSL. Conversely, CBC encryption is inherently sequential: each ciphertext block depends on the preceding ciphertext block as the XOR input for the next block, precluding parallel block encryption. During decryption, CBC blocks can be decrypted independently because all ciphertext blocks are known in advance, resulting in CBC decryption being significantly faster than CBC encryption.
 
 ---
 
-## 8. Statistical Analysis
+## 8. Statistical Analysis and Comparison
 
+The statistical summarizer (`benchmarks/summarize.py`) computes:
+- $\text{mean\_ms} = \frac{\text{mean}(\text{elapsed\_ns})}{10^6}$
+- $\text{sample\_stdev\_ms} = \frac{s(\text{elapsed\_ns})}{10^6}$ (unbiased sample standard deviation with $n-1$ denominator)
+- $\text{throughput\_MiB\_s} = \frac{\text{payload\_bytes} / 2^{20}}{\text{mean\_duration\_seconds}}$
+- $\text{difference\_percent} = 100 \times \frac{\text{mean}_{\text{GCM}} - \text{mean}_{\text{CBC}}}{\text{mean}_{\text{CBC}}}$
+
+To summarize preserved evidence into a new directory:
 ```bash
 python -m benchmarks.summarize \
   --input benchmarks/results/benchmark_results.csv \
-  --output-dir benchmarks/results/
+  --output-dir /tmp/summary_eval/
 ```
-
-Produces:
-- `benchmarks/results/results_summary.csv` — mean, median, stdev, min, max, throughput per configuration
-- `benchmarks/results/mode_comparison.csv` — GCM vs CBC mean difference percentage per size/operation
-
-The summarizer rejects malformed data, missing observations, inconsistent metadata, and non-contiguous repetition indices. It never modifies raw input or generates synthetic results.
 
 ---
 
-## 9. Generating Figures
+## 9. Report Figures
+
+All figures are located in `figures/` and reproducibly generated by `figures/generate_figures.py`:
 
 ```bash
-# Install matplotlib first (requires network access)
-pip install matplotlib
-
-# Generate F1–F4
 python figures/generate_figures.py
 ```
 
-Produces:
-- `figures/F1_architecture.svg` — SecureVault architecture diagram
-- `figures/F2_container_layout.svg` — `.svlt` and `.svkey` binary format layout
-- `figures/F3_performance.png` — GCM vs CBC latency comparison (from real data)
-- `figures/F4_tamper_behavior.png` — Tamper detection outcome comparison
+- **`figures/F1_architecture.svg`**: Architecture diagram showing CLI layer, file service safety boundaries, cryptographic engines (GCM/CBC), container serialization, key provider, and atomic file publication.
+- **`figures/F2_container_layout.svg`**: Binary format diagram showing the 48-byte immutable header (bound as GCM AAD), key descriptor, ciphertext payload, GCM 16-byte GHASH tag, and 54-byte `.svkey` structure.
+- **`figures/F3_performance.png`**: Mean latency bar charts (±1σ error bars) across sizes and log-scale box plots showing raw observation distributions.
+- **`figures/F4_tamper_behavior.png`**: Comparative horizontal chart contrasting GCM's tamper detection against CBC's silent acceptance of corrupted data.
 
 ---
 
-## 10. Architecture and File Formats
+## 10. Container Layout and Key Formats
 
-### Cryptographic Contract
-
-| Property | AES-256-GCM | AES-256-CBC |
-|---|---|---|
-| Confidentiality | ✓ | ✓ |
-| Integrity (Ciphertext) | ✓ 128-bit GHASH tag | ✗ None |
-| Header Binding | ✓ 48-byte header as AAD | ✗ None |
-| Fresh DEK | ✓ 32-byte CSPRNG per op | ✓ 32-byte CSPRNG per op |
-| Nonce/IV | 12-byte CSPRNG nonce | 16-byte CSPRNG IV |
-| Padding | None | PKCS#7 (block-aligned) |
-
-### .svlt Container Format (v1)
-
+### `.svlt` Container Layout (v1)
 ```
-Offset  Bytes  Field
-0       4      Magic: 'SVLT'
+Offset  Bytes  Field Description
+0       4      Magic: b'SVLT'
 4       1      Version: 1
-5       1      Cipher ID: 1=GCM, 2=CBC
-6       2      Flags (reserved, 0)
-8       16     File ID (random UUID)
-24      16     IV/Nonce slot (12-byte GCM nonce + 4 zero pad; 16-byte CBC IV)
-40      8      Ciphertext length (uint64 big-endian)
--- Header end (48 bytes, used as GCM AAD) --
-48      1      Key protection ID: 0=External
-49      2      Key record length (uint16 big-endian)
-51      var    Key record (0 bytes for external)
-51+    CT      Ciphertext bytes
-51+CT  16      GCM authentication tag (GCM only; absent in CBC)
+5       1      Cipher ID: 1 = GCM, 2 = CBC
+6       2      Flags: uint16 big-endian (0 = reserved)
+8       16     File UUID: 16 random bytes
+24      16     IV / Nonce Slot: 12-byte GCM nonce + 4 zero bytes; or 16-byte CBC IV
+40      8      Ciphertext Length: uint64 big-endian
+-- End of 48-byte immutable header (bound as GCM AAD) --
+48      1      Key Protection ID: 0 = External (.svkey)
+49      2      Key Record Length: uint16 big-endian (0 for external)
+51      0      Key Record Bytes (empty in external mode)
+51+     var    Ciphertext bytes (exact match to header ciphertext length)
+End     16     GCM Authentication Tag: 16 bytes (present only for GCM; omitted in CBC)
 ```
 
-### .svkey Format (External Key Record)
-
+### `.svkey` External Key Record (v1)
 ```
-Offset  Bytes  Field
-0       4      Magic: 'SVKY'
+Offset  Bytes  Field Description
+0       4      Magic: b'SVKY'
 4       1      Version: 1
-5       16     File ID (must match container file_id)
-21      1      Cipher ID: 1=GCM, 2=CBC (must match container)
-22      32     DEK (AES-256 data encryption key)
--- Total: 54 bytes, 0600 permissions --
+5       16     File UUID (must match container File UUID)
+21      1      Cipher ID: 1 = GCM, 2 = CBC (must match container)
+22      32     DEK: 256-bit AES data encryption key
+-- Total: 54 bytes; permissions restricted to 0600 --
 ```
 
 ---
 
-## 11. Coursework Evidence Locations
+## 11. Coursework Criteria Evidence Mapping (MC1–MC7)
 
-| Requirement | Evidence | Location |
-|-------------|----------|----------|
-| AES-GCM implementation | `crypto/gcm.py` | `src/securevault/crypto/gcm.py` |
-| AES-CBC implementation | `crypto/cbc.py` | `src/securevault/crypto/cbc.py` |
-| File encryption/decryption | `file_service.py` | `src/securevault/file_service.py` |
-| CLI | `cli.py` | `src/securevault/cli.py` |
-| Container format | `container.py` | `src/securevault/container.py` |
-| Key management | `key_provider.py` | `src/securevault/key_provider.py` |
-| GCM tamper detection | Tests + experiments | `tests/test_tamper.py`, `experiments/` |
-| CBC no-integrity | Tests + experiments | `tests/test_tamper.py`, `experiments/SECURITY_EXPERIMENTS.md` |
-| Security experiment CSV | Experiment outcomes | `experiments/results/security_outcomes.csv` |
-| Benchmark raw CSV | 360 real observations | `benchmarks/results/benchmark_results.csv` |
-| Statistical summary | Per-config stats | `benchmarks/results/results_summary.csv` |
-| GCM vs CBC comparison | Percentage difference | `benchmarks/results/mode_comparison.csv` |
-| Architecture diagram | F1 | `figures/F1_architecture.svg` |
-| Container layout | F2 | `figures/F2_container_layout.svg` |
-| Performance figure | F3 | `figures/F3_performance.png` |
-| Tamper behavior figure | F4 | `figures/F4_tamper_behavior.png` |
-| Full test suite | 110 passing tests | `python -m pytest -v` |
+The table below maps the 7 assessment criteria (totaling 100 marks) from the 6COSC033C specification to the codebase, automated tests, and experimental evidence:
+
+| Marking Criterion | Weight | Assessment Scope | Implementation & Evidence Mapping | Evidence Artifacts |
+|---|---|---|---|---|
+| **MC1: Introduction, Scope & Research Formulation** | **8 marks** | Problem statement, Scenario 1 definition, research question, clear scope boundaries. | `README.md` (Sections 1–4)<br>`scripts/run_demo.py` | Documented research question, binary format compatibility, and explicit operational scope. |
+| **MC2: Threat Model, Security Requirements & Adversary Model** | **12 marks** | Identification of threats: untrusted storage adversary, tampering, mode confusion, TOCTOU overwrite, unauthenticated plaintext leakage. | `src/securevault/file_service.py`<br>`src/securevault/container.py`<br>`tests/test_safe_io.py`<br>`tests/test_tamper.py` | Threat boundaries in `figures/F1_architecture.svg`; symlink rejection; immutable header AAD binding; fail-closed no-clobber publication. |
+| **MC3: Cryptographic Design & Key Management** | **15 marks** | AES-256-GCM and AES-256-CBC specification, fresh DEK generation, nonce uniqueness, unpredictable IV, PKCS#7 padding, format binding. | `src/securevault/crypto/gcm.py`<br>`src/securevault/crypto/cbc.py`<br>`src/securevault/key_provider.py`<br>`tests/test_key_recoverability.py` | Binary formats in `figures/F2_container_layout.svg`; fresh 256-bit DEK per file; separate 54-byte `.svkey` record with UUID and cipher binding. |
+| **MC4: Implementation & Functional Application** | **15 marks** | Complete, working Python application; CLI commands (`encrypt`, `decrypt`, `inspect`); byte-exact file recovery; arbitrary binary file support. | `src/securevault/cli.py`<br>`src/securevault/file_service.py`<br>`scripts/run_demo.py`<br>`tests/test_functional_e2e.py` | 10-step demo in `scripts/run_demo.py`; SHA-256 verified byte-exact recovery across PDF, JPEG, MP4, and binary fixtures. |
+| **MC5: Engineering Rigour, Error Handling & Automated Tests** | **5 marks** | Structured exception hierarchy, defensive programming, automated test coverage, regression tests. | `src/securevault/errors.py`<br>`tests/` (10 test modules, 110 tests) | 110 passed pytest tests; typed exception hierarchy rooted at `SecureVaultError`; dependency lock in `requirements-lock.txt`. |
+| **MC6: Empirical Security Evaluation & Controlled Tamper Analysis** | **25 marks** | Negative tamper testing, comparative GCM vs CBC integrity analysis, bit-flip propagation, padding vs authentication distinction. | `experiments/security_experiments.py`<br>`experiments/SECURITY_EXPERIMENTS.md`<br>`experiments/results/security_outcomes.csv`<br>`figures/F4_tamper_behavior.png` | 10 controlled experiments (GCM-01..05, CBC-01..05); empirical proof that valid PKCS#7 padding does not imply ciphertext authenticity. |
+| **MC7: Performance Evaluation & Statistical Analysis** | **20 marks** | Multi-size benchmark, encryption/decryption timing, high-resolution monotonic clock, repeated observations, statistical summary and comparison. | `benchmarks/benchmark_modes.py`<br>`benchmarks/summarize.py`<br>`benchmarks/results/benchmark_results.csv`<br>`benchmarks/results/results_summary.csv`<br>`figures/F3_performance.png` | 360 observations across 1 KiB, 1 MiB, 10 MiB; mean, median, sample stdev, throughput, and GCM vs CBC percentage differences. |
 
 ---
 
-## Platform Limitations
+## 12. Evidence Inventory and Platform Limitations
 
-- Hard-link atomic publication (`os.link()`) may not be supported on all networked or cross-device filesystems. The system fails closed rather than falling back to non-atomic writes.
-- Benchmark timing reflects in-memory cryptographic API performance, not full file I/O throughput.
-- CBC-03 wrong-key PaddingError is probabilistic (~255/256 cases). Do not treat it as authentication.
-- The `.svkey` DEK is stored in plaintext; physical security of the key file is the user's responsibility.
-- The 256 MiB ciphertext size limit (`MAX_CIPHERTEXT_SIZE`) is a bounded-memory implementation constraint, not a cryptographic limit.
+### Preserved Evidence Artifacts:
+- **Raw Benchmark CSV:** `benchmarks/results/benchmark_results.csv` (360 individual timed observations with environment metadata)
+- **Statistical Summary CSV:** `benchmarks/results/results_summary.csv` (12 configuration rows with mean, median, stdev, throughput)
+- **Mode Comparison CSV:** `benchmarks/results/mode_comparison.csv` (6 comparative rows with GCM vs CBC percentage differences)
+- **Security Outcomes CSV:** `experiments/results/security_outcomes.csv` (10 empirical tamper cases and outcomes)
+- **Security Experiments Report:** `experiments/SECURITY_EXPERIMENTS.md` (Detailed methodology, analysis, and conclusions)
+- **Architecture Diagram:** `figures/F1_architecture.svg`
+- **Container Layout Diagram:** `figures/F2_container_layout.svg`
+- **Performance Figure:** `figures/F3_performance.png`
+- **Tamper Behavior Figure:** `figures/F4_tamper_behavior.png`
+- **Dependency Snapshot:** `requirements-lock.txt`
+- **Demonstration Script:** `scripts/run_demo.py`
+
+### Platform Limitations:
+- **Hard-Link Publication:** `os.link()` requires source and destination to reside on the same filesystem volume. If atomic hard-linking is unsupported by the filesystem (e.g. cross-device links or certain network filesystems), SecureVault fails closed with `FileServiceError` rather than risking non-exclusive replacement.
+- **Timing Boundary:** Benchmark measurements capture in-memory cryptographic API duration calling the OpenSSL backend. They do not measure physical storage disk I/O or full file streaming overhead.
+- **Key Storage Boundary:** In the current external-key architecture, `.svkey` files store the DEK without key-wrapping. Physical storage security and access control of the key file are required to preserve confidentiality. Advanced vault features (Argon2id KEK, AES-KWP wrapping) are explicitly deferred.
