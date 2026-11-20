@@ -105,12 +105,54 @@ def test_kdf_parameter_bounds_rejected_before_derivation(params):
         derive_unlock_key("test passphrase", b"s" * 16, params)
 
 
+@pytest.mark.parametrize("field", ["memory_cost", "iterations", "parallelism"])
+@pytest.mark.parametrize("value", [True, 8192.0, "8192", None])
+def test_kdf_parameter_fields_require_exact_integer_types(field, value):
+    values = {"memory_cost": 8192, "iterations": 1, "parallelism": 1}
+    values[field] = value
+    with pytest.raises(KeyringError, match="must be integers"):
+        KDFParameters(**values).validate()
+
+
 def test_keyring_header_id_tampering_fails_after_unwrap():
     record, _ = create_keyring("test passphrase", FAST_KDF)
     damaged = bytearray(record.serialize())
     damaged[8] ^= 1
     with pytest.raises(KeyringError, match="Unable to unlock"):
         unlock_keyring(bytes(damaged), "test passphrase")
+
+
+@pytest.mark.parametrize(
+    ("offset", "replacement"),
+    [(56, struct.pack(">I", 8193)), (60, struct.pack(">I", 2)), (64, struct.pack(">H", 2))],
+)
+def test_accepted_range_kdf_header_tampering_does_not_unlock(offset, replacement):
+    record, _ = create_keyring("test passphrase", FAST_KDF)
+    damaged = bytearray(record.serialize())
+    damaged[offset:offset + len(replacement)] = replacement
+    # These values are individually within policy bounds, but changing KDF
+    # metadata must not make the existing wrapped key authenticate.
+    assert Keyring.parse(bytes(damaged)).parameters != FAST_KDF
+    with pytest.raises(KeyringError, match="Unable to unlock"):
+        unlock_keyring(bytes(damaged), "test passphrase")
+
+
+@pytest.mark.parametrize("data", [None, bytearray(b"x" * KEYRING_SIZE), "SVKR"])
+def test_keyring_parser_rejects_non_bytes_inputs(data):
+    with pytest.raises(KeyringError):
+        Keyring.parse(data)
+
+
+@pytest.mark.parametrize("salt", [None, bytearray(b"s" * 16), "s" * 16])
+def test_kdf_rejects_non_bytes_salt(salt):
+    with pytest.raises(KeyringError, match="salt"):
+        derive_unlock_key("test passphrase", salt, FAST_KDF)
+
+
+@pytest.mark.parametrize("password", [None, 42, [b"not a password"]])
+def test_kdf_rejects_unsupported_password_types(password):
+    with pytest.raises(TypeError, match="Password must be str or bytes"):
+        derive_unlock_key(password, b"s" * 16, FAST_KDF)
 
 
 def test_dek_aes_kwp_roundtrip_and_trusted_association_checks():

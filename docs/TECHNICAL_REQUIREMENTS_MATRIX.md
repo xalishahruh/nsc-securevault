@@ -44,6 +44,10 @@ The header is strictly parsed, but KDF metadata is not a separate authenticated 
 - `create_keyring()` returns the serialized-record object and its newly generated KEK for immediate caller use. `unlock_keyring()` returns a KEK only after exact parsing, successful KWP unwrap, and embedded-ID verification.
 - `wrap_dek()` and `unwrap_dek()` are low-level calls requiring the caller to supply trusted expected file and cipher IDs. The encrypted file header alone is not a trusted policy source.
 
+### Password policy and local cost measurement
+
+C06 rejects empty passwords and inputs longer than 1024 bytes but does not enforce a minimum length, estimate passphrase strength, apply composition rules, or normalize Unicode. A caller must provide the same UTF-8 bytes at unlock; visually equivalent Unicode strings can derive different keys. The current profile is an initial architecture baseline, not a measured user-experience target. Before exposing password-based vault initialization, measure its latency and peak memory on the actual local target machine (and any supported constrained machine), record the platform/library/OpenSSL versions, and confirm the cost is usable while retaining the frozen bounds. Do not silently lower the profile or introduce a fallback KDF.
+
 ## Scope exclusions
 
 This checkpoint does not implement an authenticated manifest, vault state, password change, KEK rotation, recovery backup, transaction protocol, keyring persistence, session lock/unlock UI, or CLI integration. It does not change `.svlt` v1 or `.svkey` behavior.

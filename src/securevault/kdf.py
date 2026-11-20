@@ -24,6 +24,9 @@ class KDFParameters:
     parallelism: int = 4
 
     def validate(self) -> None:
+        values = (self.memory_cost, self.iterations, self.parallelism)
+        if any(type(value) is not int for value in values):
+            raise KeyringError("Argon2id memory cost, iterations, and parallelism must be integers.")
         if not MIN_MEMORY_KIB <= self.memory_cost <= MAX_MEMORY_KIB:
             raise KeyringError("Argon2id memory cost is outside the supported bounds.")
         if not MIN_ITERATIONS <= self.iterations <= MAX_ITERATIONS:

@@ -13,9 +13,10 @@ Security experiments use 512-byte in-memory byte fixtures derived from fixed con
 
 **Commands to reproduce:**
 ```bash
-python -m experiments.security_experiments
-python -m experiments.security_experiments --output experiments/results/security_outcomes.csv
+python -m experiments.security_experiments --output /tmp/securevault-security-outcomes.csv
 ```
+
+CSV publication is atomic and refuses to replace an existing destination. Choose a new output path for each run; the committed `experiments/results/security_outcomes.csv` remains preserved.
 
 ---
 
@@ -105,8 +106,8 @@ CBC: 0/5 cryptographic detections — plaintext published in 3/5 cases despite m
 # Install and configure (from repository root)
 python -m venv .venv && .venv/bin/pip install -e .
 
-# Run all security experiments
-python -m experiments.security_experiments
+# Run all security experiments without replacing committed evidence
+python -m experiments.security_experiments --output /tmp/securevault-security-outcomes.csv
 
 # Run with custom output path
 python -m experiments.security_experiments --output my_results.csv

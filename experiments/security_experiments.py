@@ -503,16 +503,35 @@ def run_all() -> list[ExperimentResult]:
 
 def write_csv(results: list[ExperimentResult], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(HEADER)
-        for r in results:
-            writer.writerow([
-                r.experiment_id, r.mode, r.tamper_target, r.tamper_description,
-                r.expected_outcome, r.observed_outcome, r.exception_type,
-                r.plaintext_published, r.plaintext_matches_original,
-                r.integrity_protected, r.notes,
-            ])
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(HEADER)
+            for r in results:
+                writer.writerow(
+                    [
+                        r.experiment_id, r.mode, r.tamper_target, r.tamper_description,
+                        r.expected_outcome, r.observed_outcome, r.exception_type,
+                        r.plaintext_published, r.plaintext_matches_original,
+                        r.integrity_protected, r.notes,
+                    ]
+                )
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(temporary, output_path)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"Output already exists; refusing to overwrite: {output_path}"
+            ) from exc
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def main() -> None:
@@ -524,6 +543,8 @@ def main() -> None:
         help="Output CSV path",
     )
     args = parser.parse_args()
+    if args.output.exists() or args.output.is_symlink():
+        parser.error(f"Output already exists; choose a new path: {args.output}")
 
     print("SecureVault Security Experiments")
     print("=" * 60)

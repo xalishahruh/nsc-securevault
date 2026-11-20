@@ -21,6 +21,10 @@
 
 Python and its immutable `bytes` objects do not provide reliable secret zeroization. Password-derived keys, KEKs and DEKs may remain in process memory until reclaimed; garbage collection is not secure erasure. The caller must keep key lifetimes short and protect the process and host.
 
+### Password policy limitation and cost measurement gate
+
+The current API only rejects empty passwords and inputs over 1024 UTF-8 bytes. It does not enforce a minimum passphrase length or strength, apply composition rules, or normalize Unicode. Unlock must receive the same UTF-8 byte sequence used at creation. Before any password-based vault initialization is exposed, measure the initial 65536 KiB / 3-iteration / 4-lane Argon2id profile on the local target hardware, recording elapsed time, peak memory, Python, `cryptography`, and OpenSSL versions. Review usability on constrained supported machines without changing the accepted KDF bounds or silently falling back to another algorithm.
+
 ## Threat assumptions and residual risks
 
 The design protects a stored keyring from an attacker who can read or modify storage but cannot obtain the password or compromise the authorized endpoint. A copied keyring supports offline password guessing; Argon2id and a strong passphrase raise its cost but do not prevent it. Bounded attacker-controlled KDF values limit resource abuse, although valid high-cost values can still consume up to 256 MiB and 10 passes. KWP protects payload integrity and binds both IDs; it does not authenticate external vault state or file ciphertext. CBC remains confidentiality-only, even when its DEK is correctly wrapped.
