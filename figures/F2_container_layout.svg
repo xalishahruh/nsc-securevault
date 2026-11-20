@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="260" font-family="monospace,DejaVu Sans Mono,Courier New">
+  <style>
+    .label { font-size:10px; fill:#1a237e; font-weight:bold; text-anchor:middle; }
+    .bytes { font-size:9px; fill:#333; text-anchor:middle; }
+    .note  { font-size:9px; fill:#555; }
+    .gcm   { fill:#e8f5e9; stroke:#2e7d32; stroke-width:1.2; }
+    .cbc   { fill:#fff9c4; stroke:#f57f17; stroke-width:1.2; }
+    .shared { fill:#e3f2fd; stroke:#0d47a1; stroke-width:1.2; }
+    .optional { fill:#fce4ec; stroke:#880e4f; stroke-width:1.2; stroke-dasharray:4,3; }
+  </style>
+
+  <text x="410" y="22" text-anchor="middle" font-size="13" font-weight="bold" fill="#1a237e">SecureVault .svlt v1 Binary Container Layout</text>
+
+  <!-- GCM row -->
+  <text x="10" y="55" class="note" font-weight="bold">GCM:</text>
+  <!-- Magic 4B -->
+  <rect x="40" y="38" width="52" height="34" class="shared"/>
+  <text x="66" y="55" class="label">Magic</text>
+  <text x="66" y="66" class="bytes">SVLT (4B)</text>
+  <!-- Ver 1B -->
+  <rect x="92" y="38" width="34" height="34" class="shared"/>
+  <text x="109" y="55" class="label">Ver</text>
+  <text x="109" y="66" class="bytes">1B</text>
+  <!-- Cipher 1B -->
+  <rect x="126" y="38" width="34" height="34" class="shared"/>
+  <text x="143" y="55" class="label">Cipher</text>
+  <text x="143" y="66" class="bytes">1=GCM</text>
+  <!-- Flags 2B -->
+  <rect x="160" y="38" width="34" height="34" class="shared"/>
+  <text x="177" y="55" class="label">Flags</text>
+  <text x="177" y="66" class="bytes">2B</text>
+  <!-- FileID 16B -->
+  <rect x="194" y="38" width="72" height="34" class="shared"/>
+  <text x="230" y="55" class="label">File ID</text>
+  <text x="230" y="66" class="bytes">16B (UUID)</text>
+  <!-- Nonce 12B+4B -->
+  <rect x="266" y="38" width="72" height="34" class="gcm"/>
+  <text x="302" y="55" class="label">Nonce+Pad</text>
+  <text x="302" y="66" class="bytes">12B+4B pad</text>
+  <!-- CiphertextLen 8B -->
+  <rect x="338" y="38" width="52" height="34" class="shared"/>
+  <text x="364" y="55" class="label">CT Len</text>
+  <text x="364" y="66" class="bytes">8B (uint64)</text>
+  <!-- KeyDesc 3B -->
+  <rect x="390" y="38" width="52" height="34" class="shared"/>
+  <text x="416" y="55" class="label">KeyDesc</text>
+  <text x="416" y="66" class="bytes">ID+Len (3B)</text>
+  <!-- Ciphertext -->
+  <rect x="442" y="38" width="140" height="34" class="gcm"/>
+  <text x="512" y="55" class="label">Ciphertext</text>
+  <text x="512" y="66" class="bytes">CT Len bytes</text>
+  <!-- GCM Tag -->
+  <rect x="582" y="38" width="60" height="34" class="optional"/>
+  <text x="612" y="55" class="label">GCM Tag</text>
+  <text x="612" y="66" class="bytes">16B (GHASH)</text>
+  <!-- Total note -->
+  <text x="660" y="52" class="note">Total:</text>
+  <text x="660" y="65" class="note">48+3+CT+16</text>
+
+  <!-- Bracket for immutable header -->
+  <line x1="40" y1="78" x2="390" y2="78" stroke="#0d47a1" stroke-width="1.2"/>
+  <line x1="40" y1="75" x2="40" y2="81" stroke="#0d47a1" stroke-width="1.2"/>
+  <line x1="390" y1="75" x2="390" y2="81" stroke="#0d47a1" stroke-width="1.2"/>
+  <text x="215" y="92" text-anchor="middle" font-size="9" fill="#0d47a1" font-weight="bold">←— Immutable Header (48 bytes) — bound as GCM AAD —→</text>
+
+  <!-- CBC row -->
+  <text x="10" y="135" class="note" font-weight="bold">CBC:</text>
+  <rect x="40" y="118" width="52" height="34" class="shared"/>
+  <text x="66" y="135" class="label">Magic</text>
+  <text x="66" y="146" class="bytes">SVLT (4B)</text>
+  <rect x="92" y="118" width="34" height="34" class="shared"/>
+  <text x="109" y="135" class="label">Ver</text>
+  <text x="109" y="146" class="bytes">1B</text>
+  <rect x="126" y="118" width="34" height="34" class="shared"/>
+  <text x="143" y="135" class="label">Cipher</text>
+  <text x="143" y="146" class="bytes">2=CBC</text>
+  <rect x="160" y="118" width="34" height="34" class="shared"/>
+  <text x="177" y="135" class="label">Flags</text>
+  <text x="177" y="146" class="bytes">2B</text>
+  <rect x="194" y="118" width="72" height="34" class="shared"/>
+  <text x="230" y="135" class="label">File ID</text>
+  <text x="230" y="146" class="bytes">16B (UUID)</text>
+  <rect x="266" y="118" width="72" height="34" class="cbc"/>
+  <text x="302" y="135" class="label">IV</text>
+  <text x="302" y="146" class="bytes">16B (CSPRNG)</text>
+  <rect x="338" y="118" width="52" height="34" class="shared"/>
+  <text x="364" y="135" class="label">CT Len</text>
+  <text x="364" y="146" class="bytes">8B (uint64)</text>
+  <rect x="390" y="118" width="52" height="34" class="shared"/>
+  <text x="416" y="135" class="label">KeyDesc</text>
+  <text x="416" y="146" class="bytes">ID+Len (3B)</text>
+  <rect x="442" y="118" width="140" height="34" class="cbc"/>
+  <text x="512" y="135" class="label">Ciphertext + PKCS#7</text>
+  <text x="512" y="146" class="bytes">CT Len bytes (multiple of 16)</text>
+  <!-- No GCM tag in CBC -->
+  <text x="612" y="135" class="note" fill="#880e4f">No Tag</text>
+  <text x="612" y="148" class="note" fill="#880e4f">(no AEAD)</text>
+  <text x="660" y="130" class="note">Total:</text>
+  <text x="660" y="143" class="note">48+3+CT</text>
+
+  <!-- .svkey layout -->
+  <text x="10" y="200" class="note" font-weight="bold">.svkey:</text>
+  <rect x="40" y="183" width="52" height="34" fill="#ede7f6" stroke="#4527a0" stroke-width="1.2"/>
+  <text x="66" y="200" class="label">Magic</text>
+  <text x="66" y="211" class="bytes">SVKY (4B)</text>
+  <rect x="92" y="183" width="34" height="34" fill="#ede7f6" stroke="#4527a0" stroke-width="1.2"/>
+  <text x="109" y="200" class="label">Ver</text>
+  <text x="109" y="211" class="bytes">1B</text>
+  <rect x="126" y="183" width="72" height="34" fill="#ede7f6" stroke="#4527a0" stroke-width="1.2"/>
+  <text x="162" y="200" class="label">File ID</text>
+  <text x="162" y="211" class="bytes">16B (UUID)</text>
+  <rect x="198" y="183" width="34" height="34" fill="#ede7f6" stroke="#4527a0" stroke-width="1.2"/>
+  <text x="215" y="200" class="label">Mode</text>
+  <text x="215" y="211" class="bytes">1B</text>
+  <rect x="232" y="183" width="90" height="34" fill="#ede7f6" stroke="#4527a0" stroke-width="1.2"/>
+  <text x="277" y="200" class="label">DEK (AES-256)</text>
+  <text x="277" y="211" class="bytes">32 bytes (CSPRNG)</text>
+  <text x="340" y="200" class="note">= 54 bytes total</text>
+  <text x="340" y="213" class="note">0600 permissions</text>
+
+  <!-- Legend -->
+  <rect x="460" y="183" width="12" height="12" fill="#e3f2fd" stroke="#0d47a1" stroke-width="1"/>
+  <text x="476" y="193" class="note">Shared (GCM+CBC)</text>
+  <rect x="560" y="183" width="12" height="12" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+  <text x="576" y="193" class="note">GCM-specific</text>
+  <rect x="640" y="183" width="12" height="12" fill="#fff9c4" stroke="#f57f17" stroke-width="1"/>
+  <text x="656" y="193" class="note">CBC-specific</text>
+  <rect x="460" y="200" width="12" height="12" fill="#fce4ec" stroke="#880e4f" stroke-width="1" stroke-dasharray="4,2"/>
+  <text x="476" y="210" class="note">GCM auth tag only</text>
+  <rect x="560" y="200" width="12" height="12" fill="#ede7f6" stroke="#4527a0" stroke-width="1"/>
+  <text x="576" y="210" class="note">.svkey record</text>
+</svg>

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="520" font-family="monospace,DejaVu Sans Mono,Courier New">
+  <style>
+    .box { fill:#f0f4f8; stroke:#2d6a9f; stroke-width:1.5; rx:6; ry:6; }
+    .crypto { fill:#e8f5e9; stroke:#2e7d32; stroke-width:1.5; }
+    .security { fill:#fff3e0; stroke:#e65100; stroke-width:1.5; }
+    .storage { fill:#fce4ec; stroke:#880e4f; stroke-width:1.5; }
+    .key { fill:#ede7f6; stroke:#4527a0; stroke-width:1.5; }
+    .title { font-size:13px; font-weight:bold; fill:#1a237e; }
+    .sub { font-size:10px; fill:#333; }
+    .small { font-size:9px; fill:#555; }
+    .arrow { stroke:#555; stroke-width:1.4; fill:none; marker-end:url(#arr); }
+  </style>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="410" y="28" text-anchor="middle" class="title" font-size="15">SecureVault — System Architecture (6COSC033C CW1)</text>
+
+  <!-- CLI Layer -->
+  <rect x="20" y="45" width="780" height="62" class="box" rx="6" ry="6"/>
+  <text x="410" y="65" text-anchor="middle" class="title">CLI Layer  (securevault encrypt | decrypt | inspect)</text>
+  <text x="175" y="82" text-anchor="middle" class="sub">--mode gcm/cbc</text>
+  <text x="175" y="96" text-anchor="middle" class="small">--input --output --key-output</text>
+  <text x="410" y="82" text-anchor="middle" class="sub">--require-mode (downgrade guard)</text>
+  <text x="410" y="96" text-anchor="middle" class="small">--overwrite (explicit)</text>
+  <text x="645" y="82" text-anchor="middle" class="sub">inspect  (no key material)</text>
+  <text x="645" y="96" text-anchor="middle" class="small">structural metadata only</text>
+
+  <!-- Arrows CLI → FileService -->
+  <line x1="410" y1="107" x2="410" y2="128" class="arrow"/>
+
+  <!-- File Service -->
+  <rect x="120" y="128" width="560" height="58" class="box" rx="6" ry="6"/>
+  <text x="400" y="150" text-anchor="middle" class="title">file_service.py  (encrypt_file / decrypt_file / inspect_file)</text>
+  <text x="250" y="168" text-anchor="middle" class="sub">Preflight validation, path safety, symlink guard</text>
+  <text x="560" y="168" text-anchor="middle" class="sub">Fresh DEK generation, container assembly</text>
+
+  <!-- Arrows FileService → Crypto -->
+  <line x1="260" y1="186" x2="200" y2="220" class="arrow"/>
+  <line x1="560" y1="186" x2="620" y2="220" class="arrow"/>
+
+  <!-- AES-GCM -->
+  <rect x="60" y="220" width="260" height="80" class="crypto" rx="6" ry="6"/>
+  <text x="190" y="240" text-anchor="middle" class="title" fill="#1b5e20">AES-256-GCM (crypto/gcm.py)</text>
+  <text x="190" y="258" text-anchor="middle" class="sub">Authenticated Encryption (AEAD)</text>
+  <text x="190" y="274" text-anchor="middle" class="small">12-byte nonce (CSPRNG) · 128-bit tag</text>
+  <text x="190" y="289" text-anchor="middle" class="small">Immutable header bound as AAD</text>
+
+  <!-- AES-CBC -->
+  <rect x="500" y="220" width="260" height="80" class="crypto" rx="6" ry="6"/>
+  <text x="630" y="240" text-anchor="middle" class="title" fill="#1b5e20">AES-256-CBC (crypto/cbc.py)</text>
+  <text x="630" y="258" text-anchor="middle" class="sub">Confidentiality Only · PKCS#7</text>
+  <text x="630" y="274" text-anchor="middle" class="small">16-byte IV (CSPRNG) · No auth tag</text>
+  <text x="630" y="289" text-anchor="middle" class="small">WARNING: no integrity protection</text>
+
+  <!-- Container -->
+  <rect x="230" y="330" width="360" height="62" class="storage" rx="6" ry="6"/>
+  <text x="410" y="350" text-anchor="middle" class="title" fill="#880e4f">.svlt Container (container.py)</text>
+  <text x="410" y="368" text-anchor="middle" class="small">Magic·Ver·Cipher·Flags·FileID·IV/Nonce·CiphertextLen (48B)</text>
+  <text x="410" y="383" text-anchor="middle" class="small">KeyDesc(3B) + Ciphertext + [GCM Tag 16B]</text>
+
+  <!-- Key -->
+  <rect x="20" y="330" width="190" height="62" class="key" rx="6" ry="6"/>
+  <text x="115" y="350" text-anchor="middle" class="title" fill="#4527a0">.svkey (key_provider.py)</text>
+  <text x="115" y="368" text-anchor="middle" class="small">SVKY·Ver·FileID·CipherID·DEK(32B)</text>
+  <text x="115" y="383" text-anchor="middle" class="small">54 bytes · mode+ID association</text>
+
+  <!-- Safe I/O -->
+  <rect x="230" y="420" width="360" height="60" class="security" rx="6" ry="6"/>
+  <text x="410" y="440" text-anchor="middle" class="title" fill="#e65100">Safe File Publication (file_service.py)</text>
+  <text x="410" y="458" text-anchor="middle" class="small">Staged temp file → os.link() (atomic, exclusive)</text>
+  <text x="410" y="474" text-anchor="middle" class="small">0600 permissions · no-clobber by default · fail-closed</text>
+
+  <!-- Arrows -->
+  <line x1="190" y1="300" x2="310" y2="330" class="arrow"/>
+  <line x1="630" y1="300" x2="510" y2="330" class="arrow"/>
+  <line x1="115" y1="330" x2="230" y2="368" class="arrow"/>
+  <line x1="410" y1="392" x2="410" y2="420" class="arrow"/>
+</svg>
