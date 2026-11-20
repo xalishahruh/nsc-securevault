@@ -87,3 +87,60 @@ python -m pytest -v
 - `.svlt` (Container v1): 48-byte immutable header + 3-byte key descriptor + optional key record + ciphertext + (16-byte tag if GCM).
 - `.svkey` (External Dev Key): 54-byte record: `SVKY` (4B) + version (1B) + `file_id` (16B) + `cipher_id` (1B) + `DEK` (32B). Mode and file ID are checked against the container before decryption.
 
+## 5. AES Benchmark and Statistical Analysis
+
+The benchmark requires Python 3.10 or newer (the source uses PEP 604 union
+annotations). Install the project and its test extra in a virtual environment.
+
+Run the raw benchmark with:
+
+```bash
+python -m benchmarks.benchmark_modes
+```
+
+The default matrix has 3 sizes (1 KiB, 1 MiB, 10 MiB), 2 modes, 2 operations,
+and 30 repetitions: 360 observations. The raw CSV contains one row per timed
+operation and records mode, operation, size, zero-based repeat, elapsed ns,
+Python/OS/CPU/backend versions, run parameters, and timing boundary.
+
+Analyze an existing raw CSV with:
+
+```bash
+python -m benchmarks.summarize --input PATH --output-dir PATH
+```
+
+The output directory receives `results_summary.csv` (12 mode/size/operation
+rows) and `mode_comparison.csv` (6 size/operation rows). Existing output files
+are rejected; raw input is never changed. CSV publication stages and flushes
+the file before exclusive hard-link publication, and removes the temporary
+file after success or failure. Filesystems without hard-link support fail
+safely instead of falling back to a potentially clobbering write.
+
+The metric is **in-memory cryptographic API execution time**. Each timed
+interval contains only the public encryption or decryption API call, including
+its internal allocation, CBC padding/unpadding, and GCM authentication work.
+Fixture/key/IV/nonce generation, valid decryption-input preparation, output
+verification, warm-ups, and CSV I/O are outside timed intervals. Keys and
+nonces are fresh per operation; encryption and decryption order alternates by
+repeat. This does not measure hardware AES instruction latency or end-to-end
+file encryption. Scheduler activity, memory allocation, caches, CPU frequency,
+thermal state, and platform differences can affect observations.
+
+The summarizer rejects malformed headers/rows, missing or duplicate records,
+unsupported modes/sizes/operations, nonpositive timings, incomplete matrices,
+noncontiguous repetition IDs, inconsistent environment metadata, and
+inconsistent repetition parameters. It does not drop outliers or fill missing
+trials. At least two repetitions are required for sample standard deviation.
+
+For elapsed times in ns, the summary reports:
+
+- `mean_ms = mean(elapsed_ns) / 1,000,000`; median, min and max are also in ms.
+- `sample_stdev_ms = statistics.stdev(elapsed_ns) / 1,000,000` (denominator `n−1`).
+- `throughput_MiB_s = (size_bytes / 1,048,576) / (mean(elapsed_ns) / 1,000,000,000)`.
+  This is payload size divided by mean operation duration, not mean trial throughput.
+- `difference_percent = 100 * (mean_GCM - mean_CBC) / mean_CBC`.
+  Negative means GCM has a lower mean duration; positive means higher.
+
+The pipeline summarizes supplied observations only. It does not generate or
+claim experimental results; no final evidence run is implied by these commands.
+
