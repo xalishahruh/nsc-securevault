@@ -4,6 +4,13 @@ This module provides a reproducible benchmark comparing AES-256-GCM and
 AES-256-CBC encryption and decryption performance across three fixture
 sizes (1 KiB, 1 MiB, 10 MiB).
 
+The metric is in-memory cryptographic API execution time: the public API call
+and its internal allocations are included; fixture/key generation, decryption
+input preparation, validation, and CSV I/O are excluded. Warm-ups and an
+untimed round-trip precede measurements. Encryption and decryption order
+alternates by repeat. Scheduler, cache, frequency, thermal, and platform
+effects remain limitations; this is not hardware-instruction or file-I/O time.
+
 Measurement Boundaries and Timing Definitions:
 ----------------------------------------------
 The benchmark strictly isolates the raw cryptographic operation within the
@@ -42,6 +49,7 @@ import csv
 import hashlib
 import os
 import platform
+import tempfile
 import ssl
 import sys
 import time
@@ -132,6 +140,28 @@ def _deterministic_fixture(size: int) -> bytes:
         seed = hashlib.sha256(seed).digest()
         out.extend(seed)
     return bytes(out[:size])
+
+
+def _publish_csv(path: Path, header: list[str], rows: List[Tuple]) -> None:
+    """Atomically publish a CSV without replacing existing evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header)
+            writer.writerows(rows)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise FileExistsError(f"Output already exists; refusing to overwrite: {path}") from exc
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def run_benchmark(
@@ -241,9 +271,9 @@ def run_benchmark(
                     # Encrypt first
                     t0 = time.perf_counter_ns()
                     if mode == "gcm":
-                        _ = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
+                        enc_result = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
                     else:
-                        _ = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
+                        enc_result = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
                     t1 = time.perf_counter_ns()
                     enc_elapsed_ns = t1 - t0
 
@@ -268,11 +298,19 @@ def run_benchmark(
                     # Encrypt second
                     t2 = time.perf_counter_ns()
                     if mode == "gcm":
-                        _ = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
+                        enc_result = encrypt_gcm(enc_key, enc_iv_or_nonce, plaintext)
                     else:
-                        _ = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
+                        enc_result = encrypt_cbc(enc_key, enc_iv_or_nonce, plaintext)
                     t3 = time.perf_counter_ns()
                     enc_elapsed_ns = t3 - t2
+
+                if mode == "gcm":
+                    enc_ct, enc_tag = enc_result
+                    enc_rec = decrypt_gcm(enc_key, enc_iv_or_nonce, enc_ct, enc_tag)
+                else:
+                    enc_rec = decrypt_cbc(enc_key, enc_iv_or_nonce, enc_result)
+                if enc_rec != plaintext:
+                    raise AssertionError(f"Encryption output verification failed for {mode} size={size} repeat={i}")
 
                 # Post-timing untimed verification
                 if rec != plaintext:
@@ -314,11 +352,7 @@ def run_benchmark(
         "run_parameters",
         "timing_boundary",
     ]
-    with out_file.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(header)
-        for r in results:
-            writer.writerow(r.as_tuple())
+    _publish_csv(out_file, header, [r.as_tuple() for r in results])
 
     return results
 

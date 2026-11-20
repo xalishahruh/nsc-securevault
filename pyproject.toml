@@ -7,7 +7,7 @@ name = "securevault"
 version = "0.1.0"
 description = "SecureVault: AES-256-GCM vs AES-256-CBC file encryption and experimental evaluation"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "cryptography>=41.0.0",
 ]
