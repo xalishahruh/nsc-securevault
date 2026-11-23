@@ -370,3 +370,14 @@ securevault vault rotate-dek --root ./vault --file-id FILE_ID
 ```
 
 Password change and KEK rotation preserve file payload bytes. File DEK rotation authenticates and re-encrypts the selected GCM file. Previous generations remain available on disk, so old credentials and keys may still unlock retained history. See [key lifecycle conformance](docs/ARCHITECTURE_CONFORMANCE.md#c09-key-lifecycle) for the precise guarantees and limitations.
+
+### Encrypted backup and forgotten-password recovery (C10)
+
+Use a new archive path and a separate directory for the offline key:
+
+```bash
+securevault vault backup --root ./vault --archive ./snapshot.svra --recovery-key ./offline/snapshot.svrecovery
+securevault vault restore --archive ./snapshot.svra --recovery-key ./offline/snapshot.svrecovery --root ./recovered.vault
+```
+
+Backup prompts for the active password. Restore requires the matching offline key and prompts for a new password. Keep the key and archive in separate storage. Together they grant access to the snapshot. The destination must be a new path on a supported local POSIX filesystem. The archive contains the active generation only, with a 256 MiB encrypted payload limit. See [recovery conformance](docs/ARCHITECTURE_CONFORMANCE.md#c10-encrypted-backup-and-recovery) for interruption behavior and other limits.

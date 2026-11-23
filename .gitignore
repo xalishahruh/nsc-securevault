@@ -40,6 +40,10 @@ htmlcov/
 *.key
 *.kek
 *.dek
+*.svra
+*.svrecovery
+.svrecovery-*
+.svrestore-*/
 vault/
 *.vault
 secrets/

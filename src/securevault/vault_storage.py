@@ -150,22 +150,30 @@ class Storage:
 
 
 @contextmanager
+def initialize_layout(parent: int, name: str):
+    """Initialize an exclusively created empty root already owned by the caller."""
+    with ExitStack() as stack:
+        fd = stack.enter_context(directory(parent, name))
+        for child in ("objects", "generations", "keyrings", "staging"):
+            os.mkdir(child, 0o700, dir_fd=fd)
+        write_new(fd, ".writer.lock", b"")
+        os.fsync(fd)
+        os.fsync(parent)
+        yield Storage(stack, fd)
+
+
+@contextmanager
 def open_storage(root: Path, *, create: bool = False):
     try:
         with ExitStack() as stack:
             if create:
                 parent = stack.enter_context(path_directory(root.parent))
                 os.mkdir(root.name, 0o700, dir_fd=parent)
-                fd = stack.enter_context(directory(parent, root.name))
-                for name in ("objects", "generations", "keyrings", "staging"):
-                    os.mkdir(name, 0o700, dir_fd=fd)
-                write_new(fd, ".writer.lock", b"")
-                os.fsync(fd)
-                os.fsync(parent)
+                yield stack.enter_context(initialize_layout(parent, root.name))
             else:
                 fd = stack.enter_context(path_directory(root))
                 if not _private(os.fstat(fd)):
                     raise VaultError("Vault directories must be private and owned by the current user.")
-            yield Storage(stack, fd)
+                yield Storage(stack, fd)
     except OSError as exc:
         raise VaultError(f"Vault storage operation failed (OS error {exc.errno}).") from None

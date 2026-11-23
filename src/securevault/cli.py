@@ -8,6 +8,7 @@ from pathlib import Path
 
 from securevault.errors import SecureVaultError, VaultError
 from securevault.file_service import encrypt_file, decrypt_file, inspect_file
+from securevault.recovery import backup, restore
 from securevault.vault import Vault
 
 
@@ -46,7 +47,10 @@ def create_parser() -> argparse.ArgumentParser:
 
     p_vault = subparsers.add_parser("vault", help="Manage an encrypted vault")
     commands = p_vault.add_subparsers(dest="action", required=True)
-    for action in ("init", "unlock", "list", "inspect", "add", "extract", "change-password", "rotate-kek", "rotate-dek"):
+    for action in (
+        "init", "unlock", "list", "inspect", "add", "extract",
+        "change-password", "rotate-kek", "rotate-dek", "backup", "restore",
+    ):
         command = commands.add_parser(action)
         command.add_argument("--root", type=Path, required=True)
         if action == "add":
@@ -58,6 +62,9 @@ def create_parser() -> argparse.ArgumentParser:
             command.add_argument("--require-mode", choices=["gcm", "cbc"])
         elif action == "rotate-dek":
             command.add_argument("--file-id", required=True)
+        elif action in ("backup", "restore"):
+            command.add_argument("--archive", type=Path, required=True)
+            command.add_argument("--recovery-key", type=Path, required=True, help="Path to the offline key file")
 
     return parser
 
@@ -72,6 +79,13 @@ def _vault_password(prompt: str) -> str:
 
 
 def _run_vault(args) -> int:
+    if args.action == "restore":
+        password = _vault_password("New vault password: ")
+        if password != _vault_password("Confirm new vault password: "):
+            raise VaultError("Passwords do not match.")
+        restore(args.archive, args.recovery_key, args.root, password)
+        print("Vault restored.")
+        return 0
     password = _vault_password("Vault password: ")
     if args.action == "init":
         if password != _vault_password("Confirm vault password: "):
@@ -108,6 +122,9 @@ def _run_vault(args) -> int:
         elif args.action == "rotate-dek":
             vault.rotate_dek(args.file_id)
             print("File DEK rotated.")
+        elif args.action == "backup":
+            backup(vault, args.archive, args.recovery_key)
+            print("Backup created. Store the recovery key offline.")
     finally:
         vault.lock()
     return 0
