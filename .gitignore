@@ -44,6 +44,8 @@ htmlcov/
 *.svrecovery
 .svrecovery-*
 .svrestore-*/
+.svlt_tmp_*
+.securevault-*
 vault/
 *.vault
 secrets/

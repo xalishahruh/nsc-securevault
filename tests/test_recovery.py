@@ -436,3 +436,53 @@ def test_c11_restore_rejects_missing_inputs_alias_and_weak_password(snapshot, is
         restore(archive, key, base / "restored", password)
     assert not (base / "restored").exists()
     assert not list(base.glob(".svrestore-*"))
+
+
+def test_c111_exact_payload_limit_and_restore_preserve_object_bytes(source, monkeypatch):
+    import securevault.recovery as module
+
+    base, vault, files, offline = source
+    archive, key = base / "size.svra", offline / "size.svrecovery"
+    backup(vault, archive, key)
+    payload_size = int.from_bytes(archive.read_bytes()[20:28], "big")
+    monkeypatch.setattr(module, "MAX_PAYLOAD_SIZE", payload_size)
+    exact, exact_key = base / "exact.svra", offline / "exact.svrecovery"
+    backup(vault, exact, exact_key)
+    assert exact.stat().st_size == payload_size + 44
+    restored = base / "restored"
+    restore(exact, exact_key, restored, NEW)
+    _assert_restored(restored, files)
+    original = {p.name: p.read_bytes() for p in (base / "source" / "objects").glob("*.svlt")}
+    assert {p.name: p.read_bytes() for p in (restored / "objects").glob("*.svlt")} == original
+
+    monkeypatch.setattr(module, "MAX_PAYLOAD_SIZE", payload_size - 1)
+    beyond, beyond_key = base / "beyond.svra", offline / "beyond.svrecovery"
+    with pytest.raises(VaultError, match="limit"):
+        backup(vault, beyond, beyond_key)
+    with pytest.raises(VaultError, match="length"):
+        restore(exact, exact_key, base / "too-large", NEW)
+    assert not beyond.exists() and not beyond_key.exists() and not (base / "too-large").exists()
+
+
+def test_c111_oversized_sparse_archive_is_rejected_before_authentication(snapshot, monkeypatch):
+    import securevault.recovery as module
+
+    base, _, archive, key = snapshot
+    with archive.open("r+b") as stream:
+        stream.truncate(module.MAX_PAYLOAD_SIZE + 45)
+
+    def unexpected_crypto(*args):
+        pytest.fail("oversized archive must be rejected before decryption")
+
+    monkeypatch.setattr(module, "_decrypt_archive", unexpected_crypto)
+    with pytest.raises(VaultError, match="size limit"):
+        restore(archive, key, base / "restored", NEW)
+    assert not (base / "restored").exists()
+
+
+@pytest.mark.parametrize("candidate", ["PasswordPassword", "123456789012345", "x" * 20])
+def test_c111_restore_rejects_predictable_new_credentials(snapshot, candidate):
+    base, _, archive, key = snapshot
+    with pytest.raises(KeyringError, match="predictable"):
+        restore(archive, key, base / "rejected", candidate)
+    assert not (base / "rejected").exists()

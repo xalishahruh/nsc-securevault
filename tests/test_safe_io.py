@@ -237,3 +237,65 @@ def test_safe_write_post_publication_cleanup_failure_preserves_target(tmp_path: 
     assert target.exists()
     assert target.read_bytes() == b"vital data"
 
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])
+def test_c111_interrupted_staging_closes_and_removes_temporary_file(tmp_path, monkeypatch, failure):
+    import securevault.file_service as service
+
+    opened = []
+    temporary_file = service.tempfile.NamedTemporaryFile
+
+    def track(*args, **kwargs):
+        handle = temporary_file(*args, **kwargs)
+        opened.append(handle)
+        return handle
+
+    def fail_after_flush(fd):
+        raise failure()
+
+    target = tmp_path / "plaintext"
+    with monkeypatch.context() as patch:
+        patch.setattr(service.tempfile, "NamedTemporaryFile", track)
+        patch.setattr(os, "fsync", fail_after_flush)
+        with pytest.raises(failure):
+            _safe_write_bytes(target, b"synthetic staged content")
+    assert opened[0].closed
+    assert not list(tmp_path.iterdir())
+    _safe_write_bytes(target, b"retry")
+    assert target.read_bytes() == b"retry"
+
+
+def test_c111_warning_as_error_preserves_published_success(tmp_path, monkeypatch, caplog):
+    import warnings
+
+    original = Path.unlink
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".svlt_tmp_"):
+            raise OSError(errno.EACCES, "synthetic staging cleanup failure")
+        return original(path, *args, **kwargs)
+
+    target = tmp_path / "published"
+    with monkeypatch.context() as patch, warnings.catch_warnings():
+        patch.setattr(Path, "unlink", fail_cleanup)
+        warnings.simplefilter("error")
+        _safe_write_bytes(target, b"complete")
+    assert target.read_bytes() == b"complete"
+    assert "Failed to remove temporary staging file" in caplog.text
+
+
+def test_c111_cli_rejects_bad_magic_without_echoing_input_bytes(tmp_path, capsys):
+    from securevault.cli import main
+
+    source, container, key, output = (tmp_path / name for name in ("source", "container", "key", "output"))
+    source.write_bytes(b"SECR" * 20)
+    assert main(["inspect", "--input", str(source)]) == 2
+    err = capsys.readouterr().err
+    assert "Invalid container magic" in err and "SECR" not in err
+    encrypt_file(source, container, key)
+    key.write_bytes(b"LEAK" + key.read_bytes()[4:])
+    assert main(["decrypt", "--input", str(container), "--key-file", str(key), "--output", str(output)]) == 2
+    err = capsys.readouterr().err
+    assert "Invalid key file magic" in err
+    assert "LEAK" not in err and not output.exists()

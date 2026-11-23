@@ -144,7 +144,7 @@ def parse_container(data: bytes, max_allowed_size: int = MAX_CIPHERTEXT_SIZE) ->
     )
 
     if magic != MAGIC_CONTAINER:
-        raise InvalidHeaderError(f"Invalid magic: expected {MAGIC_CONTAINER!r}, got {magic!r}.")
+        raise InvalidHeaderError("Invalid container magic: expected SVLT.")
     if version != CONTAINER_VERSION:
         raise InvalidHeaderError(f"Unsupported version: expected {CONTAINER_VERSION}, got {version}.")
     if flags != 0:

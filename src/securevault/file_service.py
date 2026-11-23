@@ -47,6 +47,15 @@ from securevault.errors import (
 MAX_CONTAINER_SIZE = HEADER_SIZE + KEY_DESC_SIZE + WRAPPED_DEK_SIZE + MAX_CIPHERTEXT_SIZE + GCM_TAG_SIZE
 
 
+def _warn_storage(message: str) -> None:
+    logger.warning(message)
+    try:
+        warnings.warn(message, UserWarning, stacklevel=3)
+    except UserWarning:
+        # A warning-as-error filter must preserve the real publication outcome.
+        pass
+
+
 def _read_bounded(path: Path, limit: int) -> bytes:
     """Read a regular file within its size limit, even if it grows during the read."""
     if not stat.S_ISREG(path.lstat().st_mode):
@@ -101,10 +110,10 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
     tmp_path = Path(tmp_file.name)
     published = False
     try:
-        tmp_file.write(data)
-        tmp_file.flush()
-        os.fsync(tmp_file.fileno())
-        tmp_file.close()
+        with tmp_file:
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
 
         # Restrict permissions to owner-only
         try:
@@ -131,22 +140,18 @@ def _safe_write_bytes(target: Path, data: bytes, overwrite: bool = False, file_m
                 tmp_path.unlink()
             except OSError as err:
                 # Cleanup failure of staging link must not compromise, roll back, or remove published target
-                logger.warning("Failed to remove temporary staging file %s: %s", tmp_path.name, err)
-                warnings.warn(
-                    f"Failed to remove temporary staging file {tmp_path.name}: {err}",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                _warn_storage(f"Failed to remove temporary staging file {tmp_path.name}: {err}")
         else:
             os.replace(tmp_path, target)
             published = True
-    except Exception:
-        # Guarantee cleanup of temporary staged output on any publication failure
-        if not published and tmp_path.exists():
+    except BaseException:
+        if not published:
             try:
                 tmp_path.unlink()
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                logger.warning("Could not remove unpublished staging file %s.", tmp_path.name)
         raise
 
 
@@ -241,8 +246,7 @@ def encrypt_file(
             f"Container publication failed; preserved published key at '{key_output_path.name}'. "
             "An orphaned key file may remain."
         )
-        logger.warning(msg)
-        warnings.warn(msg, UserWarning, stacklevel=2)
+        _warn_storage(msg)
         raise
 
     return {
@@ -304,7 +308,7 @@ def decrypt_file(
     else:
         raise ModeMismatchError(f"Unsupported cipher ID: {parsed.header.cipher_id}")
 
-    # Publish plaintext only after complete cryptographic verification
+    # Publish only after GCM authentication or successful CBC unpadding.
     _safe_write_bytes(output_path, plaintext, overwrite=overwrite, file_mode=0o600)
 
     mode_name = "gcm" if parsed.header.cipher_id == CIPHER_GCM else "cbc"

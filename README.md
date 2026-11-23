@@ -28,12 +28,12 @@ SecureVault is an engineering-grade Python file-encryption application implement
 ## 1. Requirements and Installation
 
 - **Python Runtime:** Python 3.10 or newer (tested on Python 3.15.2, macOS arm64)
-- **Supported Platforms:** macOS, Linux
+- **Platform:** Verified on local macOS arm64. Linux is a POSIX target pending an independent run. Managed vault storage on Windows and network filesystems is unverified.
 - **Cryptographic Engine:** `cryptography >= 44.0.0` (backed by OpenSSL; Argon2id must be available)
 
 ```bash
 # 1. Clone repository
-git clone --branch feat/c11-security-validation https://github.com/xalishahruh/nsc-securevault.git
+git clone --branch fix/c11-final-hardening https://github.com/xalishahruh/nsc-securevault.git
 cd nsc-securevault
 
 # 2. Create and activate a clean virtual environment
@@ -136,7 +136,7 @@ python scripts/run_demo.py
 - **Security Goal:** Authenticated Encryption with Associated Data (AEAD) providing confidentiality, ciphertext integrity, and authentication under the shared key.
 - **Key & Nonce Lifecycle:** Fresh 256-bit DEK via `os.urandom(32)` per encryption operation. Fresh 96-bit CSPRNG nonce via `os.urandom(12)`.
 - **Nonce Reuse Prevention:** Every file encryption generates a new independent DEK and nonce, and the standalone CLI cannot accept a supplied encryption key or nonce. The tests sample repeated real CLI runs and check emitted key and nonce/IV lengths and freshness. Random draws can collide. The critical GCM condition is avoiding reuse of the same nonce under the same key.
-- **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Any modification to header metadata invalidates the 128-bit GCM authentication tag.
+- **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Header changes that pass structural validation are checked as AAD during GCM authentication.
 - **Authentication Check:** GCM uses a 128-bit tag and verifies it before returning or publishing plaintext. Authentication bounds depend on message lengths, verification attempts and correct nonce management. See [NIST SP 800-38D, §8 and Appendix B](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf).
 
 ### AES-256-CBC (Cipher Block Chaining)
@@ -356,7 +356,7 @@ securevault vault inspect --root ./vault
 securevault vault extract --root ./vault --file-id FILE_ID --output recovered.bin --require-mode gcm
 ```
 
-Use a strong passphrase. New managed vault passwords must contain at least 15 Unicode characters with a non-whitespace character, encoded within 1,024 UTF-8 bytes. Existing vaults can still unlock with their original password. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
+Use a strong passphrase. New managed vault passwords must contain at least 15 Unicode characters with a non-whitespace character, encoded within 1,024 UTF-8 bytes. A small local list rejects obvious complete guesses and repeated single-character passwords. Existing vaults can still unlock with their original password. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
 
 Use a local filesystem that supports hard links, directory syncing, POSIX file locking, and atomic same-filesystem replacement. Use a root path with no symbolic link components and keep recovered files outside the vault. See [architecture conformance](docs/ARCHITECTURE_CONFORMANCE.md#c08-managed-vault) for the exact transaction checks and crash test scope.
 
@@ -379,4 +379,6 @@ securevault vault backup --root ./vault --archive ./snapshot.svra --recovery-key
 securevault vault restore --archive ./snapshot.svra --recovery-key ./offline/snapshot.svrecovery --root ./recovered.vault
 ```
 
-Backup prompts for the active password. Restore requires the matching offline key and prompts for a new password. Keep the key and archive in separate storage. Together they grant access to the snapshot. The destination must be a new path on a supported local POSIX filesystem. The archive contains the active generation only, with a 256 MiB encrypted payload limit. See [recovery conformance](docs/ARCHITECTURE_CONFORMANCE.md#c10-encrypted-backup-and-recovery) for interruption behavior and other limits.
+Backup prompts for the active password. Restore requires the matching offline key and prompts for a new password. Keep the key and archive in separate storage. Together they grant access to the snapshot. The destination must be a new path on a supported local POSIX filesystem. The archive contains the active generation only, with a 256 MiB encrypted payload limit that includes metadata and framed objects. The application processes whole buffers, so peak memory can be several times that limit. See [recovery conformance](docs/ARCHITECTURE_CONFORMANCE.md#c10-encrypted-backup-and-recovery) for interruption behavior and other limits.
+
+See the [final hardening register](docs/C11_1_HARDENING.md) for exact cryptographic lifecycle assumptions, verification results and remaining limits.

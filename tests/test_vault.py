@@ -739,3 +739,34 @@ def test_c11_legacy_short_password_can_unlock_rotate_kek_and_upgrade(tmp_path):
         legacy.unlock(old_password)
     legacy.unlock(new_password)
     assert legacy.list_files() == ()
+
+
+@pytest.mark.parametrize("candidate", [" Password Password ", "qwertyuiopasdfgh", "z" * 16])
+def test_c111_reject_predictable_new_credentials_without_touching_current(active_vault, candidate):
+    base, root, vault = active_vault
+    current = (root / "CURRENT").read_bytes()
+    with pytest.raises(KeyringError, match="predictable"):
+        Vault.initialize(base / "rejected", candidate)
+    with pytest.raises(KeyringError, match="predictable"):
+        vault.change_password(candidate)
+    assert not (base / "rejected").exists()
+    assert (root / "CURRENT").read_bytes() == current
+    assert vault.list_files() == ()
+
+
+@pytest.mark.parametrize("mode,iv_length", [("gcm", 12), ("cbc", 16)])
+def test_c111_managed_import_draws_independent_key_and_iv(active_vault, mode, iv_length):
+    base, root, vault = active_vault
+    for index in range(3):
+        add_file(base, vault, f"input-{index}", b"identical input", mode)
+    ring = active_paths(root)[1].read_bytes()
+    kek = unlock_keyring(ring, PASSWORD)
+    ivs, keys = set(), set()
+    for path in objects(root):
+        obj = parse_container(path.read_bytes())
+        iv = obj.header.iv_or_nonce
+        dek = unwrap_dek(kek, obj.key_record, obj.header.file_id, obj.header.cipher_id)
+        assert len(iv) == iv_length and len(dek) == 32
+        ivs.add(iv)
+        keys.add(dek)
+    assert len(keys) == len(ivs) == 3

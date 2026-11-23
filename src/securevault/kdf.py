@@ -16,6 +16,10 @@ MIN_PARALLELISM = 1
 MAX_PARALLELISM = 8
 MAX_PASSWORD_BYTES = 1024
 MIN_NEW_PASSWORD_CHARS = 15
+_PREDICTABLE_PASSWORDS = frozenset({
+    "123456789012345", "1234567890123456", "passwordpassword", "password12345678",
+    "password password", "qwertyuiopasdfgh", "letmeinletmeinletmein", "correcthorsebatterystaple",
+})
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,10 @@ def validate_new_password(password: str | bytes) -> None:
         raise KeyringError("New vault passwords must be valid UTF-8.") from None
     if len(text) < MIN_NEW_PASSWORD_CHARS or text.isspace():
         raise KeyringError("New vault passwords must be at least 15 characters and contain non-whitespace.")
+    # Compare the whole candidate only. Keep the actual KDF input byte-for-byte.
+    comparison = text.strip().casefold()
+    if comparison in _PREDICTABLE_PASSWORDS or len(set(comparison)) == 1:
+        raise KeyringError("New vault password is a commonly predictable value. Choose a different passphrase.")
 
 
 def derive_unlock_key(

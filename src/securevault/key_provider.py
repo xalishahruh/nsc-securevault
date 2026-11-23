@@ -49,7 +49,7 @@ class ExternalKeyRecord:
 
         magic, version, file_id, cipher_id, dek = struct.unpack(">4sB16sB32s", data)
         if magic != MAGIC_KEY:
-            raise InvalidKeyError(f"Invalid key file magic: expected {MAGIC_KEY!r}, got {magic!r}.")
+            raise InvalidKeyError("Invalid key file magic: expected SVKY.")
         if version != KEY_RECORD_VERSION:
             raise InvalidKeyError(f"Unsupported key file version: expected {KEY_RECORD_VERSION}, got {version}.")
         if cipher_id not in (1, 2):

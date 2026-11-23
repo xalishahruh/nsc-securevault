@@ -6,11 +6,12 @@ import struct
 from contextlib import contextmanager
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from securevault.container import CIPHER_GCM, parse_container
-from securevault.crypto.gcm import (
-    GCM_TAG_SIZE, decrypt_gcm, encrypt_gcm, generate_gcm_dek, generate_gcm_nonce,
-)
-from securevault.errors import VaultError
+from securevault.crypto.gcm import GCM_TAG_SIZE, generate_gcm_dek, generate_gcm_nonce
+from securevault.errors import AuthenticationError, VaultError
 from securevault.file_service import MAX_CONTAINER_SIZE
 from securevault.kdf import validate_new_password
 from securevault.key_wrap import KEK_SIZE
@@ -113,6 +114,7 @@ def backup(vault: Vault, archive: Path, recovery_key: Path) -> None:
                     _verify_object(manifest, entry, raw, kek)
                     payload.extend(_LENGTH.pack(len(raw)))
                     payload.extend(raw)
+                    del raw
                 store.check_layout()
                 store.check_writer(lock)
                 if _current(store) != generation:
@@ -121,11 +123,10 @@ def backup(vault: Vault, archive: Path, recovery_key: Path) -> None:
                 raise VaultError("Backup exceeds the archive size limit.")
             key, nonce = generate_gcm_dek(), generate_gcm_nonce()
             prefix = _HEADER.pack(*_FORMAT, nonce, len(payload))
-            ciphertext, tag = encrypt_gcm(key, nonce, bytes(payload), associated_data=prefix)
+            sealed = AESGCM(key).encrypt(nonce, payload, prefix)
             del payload
-            envelope = prefix + ciphertext + tag
             _publish_file(offline, key_name, key)
-            _publish_file(destination, name, envelope)
+            _publish_file(destination, name, prefix + sealed)
 
 
 def _decrypt_archive(data: bytes, key: bytes) -> bytes:
@@ -136,10 +137,10 @@ def _decrypt_archive(data: bytes, key: bytes) -> bytes:
         raise VaultError("Unsupported recovery archive format.")
     if size > MAX_PAYLOAD_SIZE or len(data) != _HEADER.size + size + GCM_TAG_SIZE:
         raise VaultError("Invalid recovery archive length.")
-    return decrypt_gcm(
-        key, nonce, data[_HEADER.size:-GCM_TAG_SIZE], data[-GCM_TAG_SIZE:],
-        associated_data=data[:_HEADER.size],
-    )
+    try:
+        return AESGCM(key).decrypt(nonce, memoryview(data)[_HEADER.size:], data[:_HEADER.size])
+    except InvalidTag:
+        raise AuthenticationError("Recovery archive authentication failed.") from None
 
 
 def _verify_snapshot(payload: bytes) -> tuple[Manifest, bytes, list[tuple[int, int]]]:
