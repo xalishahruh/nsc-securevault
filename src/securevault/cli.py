@@ -1,11 +1,14 @@
 """Command-line interface for SecureVault."""
 
 import argparse
+import getpass
 import sys
+import warnings
 from pathlib import Path
 
-from securevault.errors import SecureVaultError
+from securevault.errors import SecureVaultError, VaultError
 from securevault.file_service import encrypt_file, decrypt_file, inspect_file
+from securevault.vault import Vault
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -41,7 +44,60 @@ def create_parser() -> argparse.ArgumentParser:
     p_insp = subparsers.add_parser("inspect", help="Inspect nonsecret structural metadata of a .svlt container")
     p_insp.add_argument("--input", "-i", type=Path, required=True, help="Input .svlt container file path")
 
+    p_vault = subparsers.add_parser("vault", help="Manage an encrypted vault")
+    commands = p_vault.add_subparsers(dest="action", required=True)
+    for action in ("init", "unlock", "list", "inspect", "add", "extract"):
+        command = commands.add_parser(action)
+        command.add_argument("--root", type=Path, required=True)
+        if action == "add":
+            command.add_argument("--input", type=Path, required=True)
+            command.add_argument("--mode", choices=["gcm", "cbc"], default="gcm")
+        elif action == "extract":
+            command.add_argument("--file-id", required=True)
+            command.add_argument("--output", type=Path, required=True)
+            command.add_argument("--require-mode", choices=["gcm", "cbc"])
+
     return parser
+
+
+def _vault_password(prompt: str) -> str:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass(prompt)
+        except (getpass.GetPassWarning, EOFError, KeyboardInterrupt):
+            raise VaultError("A hidden interactive password prompt is required.") from None
+
+
+def _run_vault(args) -> int:
+    password = _vault_password("Vault password: ")
+    if args.action == "init":
+        if password != _vault_password("Confirm vault password: "):
+            raise VaultError("Passwords do not match.")
+        Vault.initialize(args.root, password)
+        print("Vault initialized.")
+        return 0
+    vault = Vault(args.root)
+    vault.unlock(password)
+    del password
+    try:
+        if args.action == "unlock":
+            print("Vault verified. Access ends when this command exits.")
+        elif args.action == "list":
+            for file_id, mode in vault.list_files():
+                print(f"{file_id} {mode}")
+        elif args.action == "inspect":
+            for name, value in vault.inspect().items():
+                print(f"{name}: {value}")
+        elif args.action == "add":
+            print(vault.add(args.input, mode=args.mode))
+        elif args.action == "extract":
+            mode = vault.extract(args.file_id, args.output, require_mode=args.require_mode)
+            if mode == "cbc":
+                print("Warning: AES-CBC ciphertext is unauthenticated.", file=sys.stderr)
+    finally:
+        vault.lock()
+    return 0
 
 
 def main(args=None) -> int:
@@ -54,6 +110,8 @@ def main(args=None) -> int:
         return 1
 
     try:
+        if parsed.subcommand == "vault":
+            return _run_vault(parsed)
         if parsed.subcommand == "encrypt":
             result = encrypt_file(
                 input_path=parsed.input,

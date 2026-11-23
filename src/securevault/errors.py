@@ -70,3 +70,7 @@ class PathSecurityError(FileServiceError):
 
 class ManifestError(SecureVaultError):
     """Raised when a manifest format or expected association is invalid."""
+
+
+class VaultError(SecureVaultError):
+    """Raised when the managed vault cannot safely complete an operation."""

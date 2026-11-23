@@ -343,4 +343,20 @@ The table below maps the 7 assessment criteria (totaling 100 marks) from the 6CO
 ### Platform Limitations:
 - **Hard-Link Publication:** `os.link()` requires source and destination to reside on the same filesystem volume. If atomic hard-linking is unsupported by the filesystem (e.g. cross-device links or certain network filesystems), SecureVault fails closed with `FileServiceError` rather than risking non-exclusive replacement.
 - **Timing Boundary:** Benchmark measurements capture in-memory cryptographic API duration calling the OpenSSL backend. They do not measure physical storage disk I/O or full file streaming overhead.
-- **Key Storage Boundary:** The existing file CLI still uses external `.svkey` DEK records, which require protected storage. C06 now provides Argon2id/SVKR and AES-KWP key-hierarchy library APIs, for use by the future managed vault. The legacy audit register records local KDF cost measurements and pending platform validation.
+- **Key Storage Boundary:** Standalone commands use external `.svkey` records, which require protected storage. The managed vault uses password-protected SVKR records and wrapped file keys. The legacy audit register records local KDF measurements and pending platform validation.
+
+## 13. Managed vault (C08)
+
+On POSIX, initialize a new vault directory and import a file:
+
+```bash
+securevault vault init --root ./vault
+securevault vault add --root ./vault --input sample.bin
+securevault vault list --root ./vault
+securevault vault inspect --root ./vault
+securevault vault extract --root ./vault --file-id FILE_ID --output recovered.bin --require-mode gcm
+```
+
+Choose a strong passphrase. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
+
+Use a local filesystem that supports hard links, directory syncing, POSIX file locking, and atomic same-filesystem replacement. Use a root path with no symbolic link components and keep recovered files outside the vault. See [architecture conformance](docs/ARCHITECTURE_CONFORMANCE.md#c08-managed-vault) for the exact transaction checks and crash test scope.
