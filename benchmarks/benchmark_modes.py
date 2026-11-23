@@ -13,14 +13,15 @@ effects remain limitations; this is not hardware-instruction or file-I/O time.
 
 Measurement Boundaries and Timing Definitions:
 ----------------------------------------------
-The benchmark strictly isolates the raw cryptographic operation within the
+The benchmark times the in-memory mode API call within the
 timed interval using `time.perf_counter_ns()`:
 
 - Encryption Measurement Boundary:
   INCLUDED: Only the raw invocation of `encrypt_gcm(dek, nonce, plaintext)` or
             `encrypt_cbc(dek, iv, plaintext)`.
-  EXCLUDED: Fixture generation, DEK and nonce/IV generation, allocation of
-            buffers, verification, and CSV I/O.
+  EXCLUDED: Fixture generation, DEK and nonce/IV generation, external setup,
+            plaintext comparison, and CSV I/O. Allocations and cryptographic
+            processing inside the mode API are included.
 
 - Decryption Measurement Boundary:
   INCLUDED: Only the raw invocation of `decrypt_gcm(dek, nonce, ciphertext, tag)`

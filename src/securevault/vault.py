@@ -14,6 +14,7 @@ from securevault.crypto.cbc import decrypt_cbc, encrypt_cbc, generate_cbc_iv
 from securevault.crypto.gcm import GCM_TAG_SIZE, decrypt_gcm, encrypt_gcm, generate_gcm_dek, generate_gcm_nonce
 from securevault.errors import ModeMismatchError, VaultError
 from securevault.file_service import MAX_CONTAINER_SIZE
+from securevault.kdf import validate_new_password
 from securevault.key_wrap import KEK_SIZE, WRAPPED_DEK_SIZE, wrap_dek
 from securevault.keyring import KEYRING_SIZE, Keyring, create_keyring, protect_keyring, unlock_keyring
 from securevault.manifest import AAD_SIZE, MAX_ENTRIES, MAX_METADATA_SIZE, Manifest, open_manifest, seal_manifest
@@ -182,6 +183,7 @@ class Vault:
         root = Path(root).absolute()
         if root.name in ("", "..") or ".." in root.parts:
             raise VaultError("Unsafe vault root.")
+        validate_new_password(password)
         ring, kek = create_keyring(password)
         verified_kek = unlock_keyring(
             ring.serialize(), password, expected_vault_id=ring.vault_id,
@@ -262,6 +264,7 @@ class Vault:
     def change_password(self, new_password: str | bytes) -> None:
         """Publish a fresh password wrapper for the existing KEK and lock the session."""
         with self._open() as (store, ring, kek, keyring_data), store.writer() as lock:
+            validate_new_password(new_password)
             current = self._active(store, ring, kek, keyring_data)
             updated = protect_keyring(new_password, kek, ring.vault_id, ring.kek_generation_id, ring.parameters)
             if unlock_keyring(updated.serialize(), new_password) != kek:

@@ -33,18 +33,17 @@ SecureVault is an engineering-grade Python file-encryption application implement
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/xalishahruh/nsc-securevault.git
+git clone --branch feat/c11-security-validation https://github.com/xalishahruh/nsc-securevault.git
 cd nsc-securevault
 
 # 2. Create and activate a clean virtual environment
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# 3. Install SecureVault with test dependencies
-pip install -e ".[test]"
-
-# 4. Optional: install matplotlib for figure regeneration
-pip install matplotlib
+# 3. Record the checkout and install the tested dependency versions
+git rev-parse HEAD
+python -m pip install -r requirements-lock.txt
+python -m pip install --no-build-isolation --no-deps -e .
 ```
 
 Verify CLI installation:
@@ -134,16 +133,16 @@ python scripts/run_demo.py
 ## 4. Cryptographic Properties and Security Analysis
 
 ### AES-256-GCM (Galois/Counter Mode)
-- **Security Goal:** Authenticated Encryption with Associated Data (AEAD) providing confidentiality, ciphertext integrity, and origin authenticity.
+- **Security Goal:** Authenticated Encryption with Associated Data (AEAD) providing confidentiality, ciphertext integrity, and authentication under the shared key.
 - **Key & Nonce Lifecycle:** Fresh 256-bit DEK via `os.urandom(32)` per encryption operation. Fresh 96-bit CSPRNG nonce via `os.urandom(12)`.
-- **Nonce Collision Analysis:** With 96-bit random nonces, birthday collision probability reaches $2^{-32}$ after approximately $2^{48}$ encryptions under the same key. SecureVault enforces a fresh random 256-bit DEK per file encryption, preventing multiple encryptions under any single key and neutralizing cross-file nonce collision risks.
+- **Nonce Reuse Prevention:** Every file encryption generates a new independent DEK and nonce, and the standalone CLI cannot accept a supplied encryption key or nonce. The tests sample repeated real CLI runs and check emitted key and nonce/IV lengths and freshness. Random draws can collide. The critical GCM condition is avoiding reuse of the same nonce under the same key.
 - **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Any modification to header metadata invalidates the 128-bit GCM authentication tag.
-- **Authentication Guarantee:** Tag forgery probability is bounded by $2^{-128}$ under standard cryptographic assumptions. Decryption strictly validates the authentication tag before writing or returning plaintext.
+- **Authentication Check:** GCM uses a 128-bit tag and verifies it before returning or publishing plaintext. Authentication bounds depend on message lengths, verification attempts and correct nonce management. See [NIST SP 800-38D, §8 and Appendix B](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf).
 
 ### AES-256-CBC (Cipher Block Chaining)
 - **Security Goal:** Confidentiality only against chosen-plaintext attacks (IND-CPA), conditioned on an unpredictable initialization vector (IV).
 - **Integrity Limitation:** AES-CBC provides **no inherent integrity or authenticity**. Modifying a ciphertext block predictably alters plaintext bits in the subsequent block.
-- **Padding Semantics:** PKCS#7 padding aligns plaintext to 16-byte block boundaries. **Valid padding does not guarantee authenticity.** A random corrupted final block has approximately a $1/256$ probability of ending in `0x01` (valid padding). When non-last ciphertext blocks are modified, the final block padding remains entirely intact, and decryption silently succeeds while returning corrupted plaintext (empirically confirmed in experiment `CBC-05`).
+- **Padding Semantics:** PKCS#7 padding aligns plaintext to 16-byte block boundaries. **Valid padding does not guarantee authenticity.** Under the uniform final-block model, the probability of any valid padding is approximately $1/255$. Tampering that leaves the final plaintext padding intact can return corrupted plaintext, as observed in experiment `CBC-05`.
 
 ### Safe File Publication (Atomic No-Clobber)
 - File writes stage data into owner-restricted temporary files (`0600`), flush buffers, and call `os.fsync`.
@@ -212,7 +211,7 @@ Filesystem publication is exercised separately by the CLI demo and file service 
 - **Payload Sizes:** 1 KiB (1,024 B), 1 MiB (1,048,576 B), 10 MiB (10,485,760 B)
 - **Operations:** Encryption and Decryption (timed separately)
 - **Repetitions:** 30 per configuration = **360 total timed observations**
-- **Measurement Boundary:** Timed interval strictly isolates the cryptographic primitive call using `time.perf_counter_ns()`. Key/nonce generation, synthetic fixture generation, valid decryption input staging, output verification, and disk I/O are strictly excluded.
+- **Measurement Boundary:** The timed interval wraps the in-memory mode API call using `time.perf_counter_ns()`. It includes library context setup and allocations inside the API, CBC padding or unpadding, and GCM tag generation or verification. Key and IV/nonce generation, fixture setup, plaintext comparison, and disk I/O are outside the timed interval.
 - **Order Balancing:** Alternates encryption-first and decryption-first order across repetitions to mitigate systematic cache ordering bias.
 - **Warm-Up:** 2 untimed warm-up cycles executed prior to measurement per configuration.
 
@@ -240,7 +239,7 @@ python -m benchmarks.summarize \
 | **10 MiB** | Encrypt | 2.03487 ± 0.15125 | 10.25413 ± 0.10028 | 4,914.32 | 975.22 | **−80.16%** |
 | **10 MiB** | Decrypt | 2.13081 ± 0.40742 | 2.53635 ± 0.11805 | 4,693.05 | 3,942.67 | **−15.99%** |
 
-*Algorithmic Discussion:* GCM operates as a stream cipher using counter mode (CTR) for encryption and GHASH for authentication. CTR allows blocks to be computed independently, enabling pipelined block processing in OpenSSL. Conversely, CBC encryption is inherently sequential: each ciphertext block depends on the preceding ciphertext block as the XOR input for the next block, precluding parallel block encryption. During decryption, CBC blocks can be decrypted independently because all ciphertext blocks are known in advance, resulting in CBC decryption being significantly faster than CBC encryption.
+*Algorithmic Discussion:* GCM uses AES counter mode for encryption and GHASH for authentication. Counter blocks can be computed independently. CBC encryption chains each block to its predecessor; CBC decryption can process the AES operations in parallel once all ciphertext blocks are available. These differences may help explain the measurements alongside library dispatch, allocations and hardware acceleration. The experiment does not isolate those individual effects.
 
 ---
 
@@ -357,7 +356,7 @@ securevault vault inspect --root ./vault
 securevault vault extract --root ./vault --file-id FILE_ID --output recovered.bin --require-mode gcm
 ```
 
-Choose a strong passphrase. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
+Use a strong passphrase. New managed vault passwords must contain at least 15 Unicode characters with a non-whitespace character, encoded within 1,024 UTF-8 bytes. Existing vaults can still unlock with their original password. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
 
 Use a local filesystem that supports hard links, directory syncing, POSIX file locking, and atomic same-filesystem replacement. Use a root path with no symbolic link components and keep recovered files outside the vault. See [architecture conformance](docs/ARCHITECTURE_CONFORMANCE.md#c08-managed-vault) for the exact transaction checks and crash test scope.
 

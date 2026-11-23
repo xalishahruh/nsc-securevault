@@ -15,6 +15,7 @@ MAX_ITERATIONS = 10
 MIN_PARALLELISM = 1
 MAX_PARALLELISM = 8
 MAX_PASSWORD_BYTES = 1024
+MIN_NEW_PASSWORD_CHARS = 15
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,16 @@ def password_bytes(password: str | bytes) -> bytes:
     if not encoded or len(encoded) > MAX_PASSWORD_BYTES:
         raise KeyringError("Password must contain between 1 and 1024 UTF-8 bytes.")
     return encoded
+
+
+def validate_new_password(password: str | bytes) -> None:
+    """Apply the managed vault policy only when setting a new password."""
+    try:
+        text = password_bytes(password).decode("utf-8")
+    except UnicodeError:
+        raise KeyringError("New vault passwords must be valid UTF-8.") from None
+    if len(text) < MIN_NEW_PASSWORD_CHARS or text.isspace():
+        raise KeyringError("New vault passwords must be at least 15 characters and contain non-whitespace.")
 
 
 def derive_unlock_key(

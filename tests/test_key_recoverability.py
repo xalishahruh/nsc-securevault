@@ -1,7 +1,10 @@
 """Regression tests for key recoverability, path validation, and safe failure handling (C02)."""
 
+import subprocess
+import sys
 from pathlib import Path
 import pytest
+from securevault.container import parse_container
 from securevault.file_service import encrypt_file, decrypt_file, _safe_write_bytes
 from securevault.key_provider import ExternalKeyRecord
 from securevault.errors import (
@@ -130,4 +133,32 @@ def test_encrypt_key_recoverability_gcm_and_cbc(tmp_path: Path, mode: str):
 
     decrypt_file(dst, rec, key_file_path=key, require_mode=mode)
     assert rec.read_bytes() == payload
+
+
+@pytest.mark.parametrize("mode,iv_size", [("gcm", 12), ("cbc", 16)])
+def test_c11_each_standalone_cli_encryption_generates_a_new_key_and_iv(tmp_path, mode, iv_size):
+    source = tmp_path / "input"
+    payload = bytes(range(16))
+    source.write_bytes(payload)
+    keys, ivs = set(), set()
+    for index in range(4):
+        container = tmp_path / f"{index}.svlt"
+        key_path = tmp_path / f"{index}.svkey"
+        result = subprocess.run(
+            [sys.executable, "-m", "securevault", "encrypt", "--mode", mode, "--input", str(source),
+             "--output", str(container), "--key-output", str(key_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        key = ExternalKeyRecord.parse(key_path.read_bytes())
+        parsed = parse_container(container.read_bytes())
+        assert key.file_id == parsed.header.file_id and key.cipher_id == parsed.header.cipher_id
+        assert len(key.dek) == 32 and len(parsed.header.iv_or_nonce) == iv_size
+        assert len(parsed.ciphertext) == (16 if mode == "gcm" else 32)
+        keys.add(key.dek)
+        ivs.add(parsed.header.iv_or_nonce)
+        output = tmp_path / f"out-{index}"
+        decrypt_file(container, output, key_path, require_mode=mode)
+        assert output.read_bytes() == payload
+    assert len(keys) == len(ivs) == 4
 

@@ -392,3 +392,47 @@ def test_rec03_cli_uses_only_new_password_on_restore(source, monkeypatch, capsys
     output = capsys.readouterr().out
     assert OLD not in output and NEW not in output and key.read_bytes().hex() not in output
     _assert_restored(target, files)
+
+
+def test_c11_complete_lifecycle_and_operations_after_restore(source):
+    base, vault, files, offline = source
+    updated = "synthetic updated workflow passphrase"
+    vault.change_password(updated)
+    vault.unlock(updated)
+    vault.rotate_kek(updated)
+    vault.unlock(updated)
+    gcm = next(ident for ident, (_, mode) in files.items() if mode == "gcm")
+    vault.rotate_dek(gcm)
+
+    archive, key = base / "workflow.svra", offline / "workflow.svrecovery"
+    backup(vault, archive, key)
+    destination = base / "restored"
+    restore(archive, key, destination, NEW)
+    _assert_restored(destination, files)
+    reopened = Vault(destination)
+    reopened.unlock(NEW)
+    source_file = base / "extra"
+    source_file.write_bytes(b"post-restore\x00\xff")
+    ident = reopened.add(source_file)
+    reopened.rotate_dek(ident)
+    reopened.extract(ident, base / "post-restore")
+    assert (base / "post-restore").read_bytes() == source_file.read_bytes()
+    assert len(reopened.list_files()) == len(files) + 1
+
+
+@pytest.mark.parametrize("issue", ["key", "archive", "aliased-key", "short-new-password"])
+def test_c11_restore_rejects_missing_inputs_alias_and_weak_password(snapshot, issue):
+    base, _, archive, key = snapshot
+    password = NEW
+    if issue == "key":
+        key = key.with_name("missing.svrecovery")
+    elif issue == "archive":
+        archive = base / "missing.svra"
+    elif issue == "aliased-key":
+        os.link(key, key.with_name("alias.svrecovery"))
+    else:
+        password = "short"
+    with pytest.raises(KeyringError if issue == "short-new-password" else VaultError):
+        restore(archive, key, base / "restored", password)
+    assert not (base / "restored").exists()
+    assert not list(base.glob(".svrestore-*"))

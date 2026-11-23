@@ -12,6 +12,7 @@ from securevault.crypto.gcm import (
 )
 from securevault.errors import VaultError
 from securevault.file_service import MAX_CONTAINER_SIZE
+from securevault.kdf import validate_new_password
 from securevault.key_wrap import KEK_SIZE
 from securevault.keyring import protect_keyring, unlock_keyring
 from securevault.manifest import Manifest, ManifestFile, open_manifest
@@ -194,6 +195,7 @@ def restore(archive: Path, recovery_key: Path, destination: Path, new_password: 
     """Validate an entire archive, then publish a new password-protected vault."""
     archive, recovery_key, destination = Path(archive), Path(recovery_key), Path(destination)
     target = _name(destination)
+    validate_new_password(new_password)
     with _storage_errors(), path_directory(destination.parent) as parent:
         _writable_parent(parent)
         _require_absent(parent, target)

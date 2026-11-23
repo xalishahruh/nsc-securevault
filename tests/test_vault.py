@@ -15,6 +15,7 @@ from securevault.errors import (
 )
 from securevault.key_wrap import unwrap_dek
 from securevault.keyring import Keyring, unlock_keyring
+from securevault.manifest import open_manifest
 from securevault.vault import Vault
 
 
@@ -303,20 +304,26 @@ root, source, phase, *action = sys.argv[1:]
 vault = module.Vault(Path(root))
 vault.unlock("synthetic vault test password")
 
-if phase == "stage":
+if phase in ("stage", "staged-object"):
     original = module.write_new
     def write_then_stop(parent, name, data):
         original(parent, name, data)
-        if name == "manifest.svmf":
+        if name == ("manifest.svmf" if phase == "stage" else "object"):
             os._exit(71)
     module.write_new = write_then_stop
-elif phase == "object":
+elif phase in ("object", "keyring", "manifest.svmf"):
     original = module.publish
     def publish_then_stop(stage, name, destination, target):
         original(stage, name, destination, target)
-        if name == "object":
+        if name == phase:
             os._exit(71)
     module.publish = publish_then_stop
+elif phase == "after-sync":
+    original = module._activate
+    def activate_then_stop(*args):
+        original(*args)
+        os._exit(71)
+    module._activate = activate_then_stop
 else:
     original = module.os.replace
     def stop_at_activation(source, destination, **kwargs):
@@ -329,6 +336,8 @@ if action == ["password"]:
     vault.change_password("synthetic changed password")
 elif action == ["kek"]:
     vault.rotate_kek("synthetic vault test password")
+elif action == ["dek"]:
+    vault.rotate_dek(source)
 else:
     vault.add(Path(source))
 """
@@ -635,3 +644,98 @@ def test_lifecycle_cli_dispatch(active_vault, monkeypatch, capsys):
     vault.unlock(replacement)
     vault.extract(ident, base / "recovered")
     assert (base / "recovered").read_bytes() == b"fixture"
+
+
+@pytest.mark.parametrize("phase", [
+    "stage", "staged-object", "object", "keyring", "manifest.svmf", "before", "after", "after-sync",
+])
+def test_c11_dek_rotation_process_exit_keeps_complete_generation(active_vault, phase):
+    base, root, vault = active_vault
+    file_id = add_file(base, vault, "selected", bytes(range(256)))
+    other_id = add_file(base, vault, "other", b"independent object", mode="cbc")
+
+    def active_object_id():
+        manifest_path, ring_path = active_paths(root)
+        ring_data = ring_path.read_bytes()
+        ring = Keyring.parse(ring_data)
+        manifest = open_manifest(
+            manifest_path.read_bytes(), unlock_keyring(ring_data, PASSWORD),
+            expected_vault_id=ring.vault_id, expected_generation_id=bytes.fromhex(manifest_path.parent.name),
+            expected_kek_generation_id=ring.kek_generation_id,
+        )
+        return manifest.file(bytes.fromhex(file_id)).object_id
+
+    pointer = (root / "CURRENT").read_bytes()
+    old_manifest, old_ring = active_paths(root)
+    old_object = active_object_id()
+    exited = subprocess.run(
+        [sys.executable, "-c", _CRASH_WRITER, str(root), file_id, phase, "dek"],
+        capture_output=True, timeout=20,
+    )
+    assert exited.returncode == 71, exited.stderr.decode()
+    expected_activation = phase in ("after", "after-sync")
+    assert ((root / "CURRENT").read_bytes() != pointer) is expected_activation
+    assert (active_object_id() != old_object) is expected_activation
+    assert old_manifest.is_file() and old_ring.is_file()
+    restarted = Vault(root)
+    restarted.unlock(PASSWORD)
+    assert dict(restarted.list_files()) == {file_id: "gcm", other_id: "cbc"}
+    for ident, payload in ((file_id, bytes(range(256))), (other_id, b"independent object")):
+        output = base / ("recovered-" + ident)
+        restarted.extract(ident, output)
+        assert output.read_bytes() == payload
+    restarted.rotate_dek(file_id)  # Abandoned work does not prevent a later commit.
+
+
+def test_c11_rollback_of_complete_historical_generation_is_possible(active_vault):
+    base, root, vault = active_vault
+    old_id = add_file(base, vault, "old", b"historical snapshot")
+    pointer = (root / "CURRENT").read_bytes()
+    old_manifest, old_ring = active_paths(root)
+    newer_id = add_file(base, vault, "new", b"new addition")
+    vault.change_password("synthetic replacement password")
+    assert old_manifest.is_file() and old_ring.is_file()
+
+    (root / "CURRENT").write_bytes(pointer)
+    restarted = Vault(root)
+    restarted.unlock(PASSWORD)
+    assert dict(restarted.list_files()) == {old_id: "gcm"}
+    with pytest.raises(ManifestError):
+        restarted.extract(newer_id, base / "absent")
+    restarted.extract(old_id, base / "historical")
+    assert (base / "historical").read_bytes() == b"historical snapshot"
+
+
+@pytest.mark.parametrize("candidate", ["x" * 14, " " * 15, "é" * 8, b"\xff" * 16])
+def test_c11_password_policy_applies_only_when_setting_password(active_vault, candidate):
+    base, root, vault = active_vault
+    accepted = (root / "CURRENT").read_bytes()
+    with pytest.raises(KeyringError):
+        Vault.initialize(base / "reject", candidate)
+    assert not (base / "reject").exists()
+    with pytest.raises(KeyringError):
+        vault.change_password(candidate)
+    assert (root / "CURRENT").read_bytes() == accepted
+    assert vault.list_files() == ()
+
+
+def test_c11_legacy_short_password_can_unlock_rotate_kek_and_upgrade(tmp_path):
+    from securevault.keyring import create_keyring
+    from securevault.vault import _commit
+    from securevault.vault_storage import open_storage
+
+    root = tmp_path.resolve() / "legacy"
+    old_password = "old"
+    new_password = "á" * 14 + "b"
+    ring, kek = create_keyring(old_password)
+    with open_storage(root, create=True) as store, store.writer() as lock:
+        _commit(store, lock, None, ring, kek, [])
+    legacy = Vault(root)
+    legacy.unlock(old_password)
+    legacy.rotate_kek(old_password)
+    legacy.unlock(old_password)
+    legacy.change_password(new_password.encode("utf-8"))
+    with pytest.raises(KeyringError):
+        legacy.unlock(old_password)
+    legacy.unlock(new_password)
+    assert legacy.list_files() == ()
