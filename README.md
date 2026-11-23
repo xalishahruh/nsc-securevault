@@ -360,3 +360,13 @@ securevault vault extract --root ./vault --file-id FILE_ID --output recovered.bi
 Choose a strong passphrase. Commands prompt without echo and unlock for one command. `vault unlock` verifies credentials and the active inventory. For a process-local session in Python, call `Vault.unlock(password)` and then `Vault.lock()` when finished. Imports default to GCM. Use `--mode cbc` only when you intend to use the unauthenticated comparison mode. Extraction refuses to overwrite a destination.
 
 Use a local filesystem that supports hard links, directory syncing, POSIX file locking, and atomic same-filesystem replacement. Use a root path with no symbolic link components and keep recovered files outside the vault. See [architecture conformance](docs/ARCHITECTURE_CONFORMANCE.md#c08-managed-vault) for the exact transaction checks and crash test scope.
+
+### Managed key lifecycle (C09)
+
+```bash
+securevault vault change-password --root ./vault
+securevault vault rotate-kek --root ./vault
+securevault vault rotate-dek --root ./vault --file-id FILE_ID
+```
+
+Password change and KEK rotation preserve file payload bytes. File DEK rotation authenticates and re-encrypts the selected GCM file. Previous generations remain available on disk, so old credentials and keys may still unlock retained history. See [key lifecycle conformance](docs/ARCHITECTURE_CONFORMANCE.md#c09-key-lifecycle) for the precise guarantees and limitations.

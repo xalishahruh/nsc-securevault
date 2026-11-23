@@ -86,3 +86,21 @@ C08 assumes cooperating writers and a trusted active OS process. A host attacker
 Every generation commit authenticates GCM payloads under the writer lock before changing CURRENT, including reused objects from older generations. The pass reads every live container and allocates plaintext for one GCM file at a time. Work grows with total live bytes and increases write latency. A local smoke measurement on macOS arm64 (three 1 MiB GCM objects, 10 warm-cache passes, excluding Argon2id and publication) measured a 0.852 ms median for structural checks and 1.882 ms with GCM verification. This is a diagnostic measurement and is separate from the historical coursework evidence.
 
 POSIX local filesystem support, unverified power-loss and network-filesystem behavior, and valid-generation rollback remain the same. CBC payloads receive structure and key association checks only.
+
+The corruption regression modifies an existing GCM ciphertext byte, runs a real append and checks that the 39 CURRENT bytes remain identical. At the correction checkpoint, `python -m pytest -q tests/test_vault.py` passed 29 tests in 7.89 seconds and the full suite passed 242 tests in 13.23 seconds.
+
+## C09 key lifecycle
+
+Each lifecycle operation acquires the existing writer lock, authenticates CURRENT and its SVMF using the unlocked SVKR context, and commits through the shared CURRENT-last transaction. Before activation the writer checks every candidate object's structure and key association and authenticates every referenced GCM payload. Temporary plaintext exists only in memory during authentication and re-encryption.
+
+| Operation | New generation |
+|---|---|
+| Password change | Preserves the vault ID, KEK generation, KEK and all object references. Uses a new Argon2id salt and verifies password unlock of the newly wrapped keyring before activation. |
+| KEK rotation | Verifies the current password, creates a fresh random KEK and KEK generation ID, and verifies the new password wrapper. For each live object, verifies the old key binding and any GCM tag, then creates a new immutable object with only the 64-byte KWP record changed. The file ID, first 48 header bytes, payload ciphertext and GCM tag are preserved. A new SVMF uses a fresh manifest data key. |
+| File DEK rotation | Authenticates the selected GCM object, encrypts the recovered bytes with a fresh DEK and nonce, and verifies exact recovery from the staged object. The file ID stays stable and only its object reference changes. CBC file DEK rotation is rejected because there is no original payload authentication to verify. |
+
+Password change and KEK rotation close the initiating session. Other unlocked sessions detect the changed keyring and must unlock again. Old committed manifests, keyrings and objects remain on disk. A password change changes which password opens the active generation. A retained old keyring and its old password can still recover the same KEK, and older complete generations can still be replayed. Rotation does not revoke previously obtained keys or eliminate historic copies. CBC objects support KEK rewrapping, with integrity checks limited to structure and wrapped key associations.
+
+The process-exit tests cover before and after CURRENT replacement for password change and KEK rotation, and a partial KEK update after the first new object is published. Restart verifies the selected credentials and exact recovered bytes. This is evidence for process interruption on the tested local POSIX filesystem. Power-loss durability, network filesystems, and Windows remain unverified. C10 encrypted backup and recovery remains pending.
+
+On macOS arm64 with Python 3.15.2, `python -m compileall -q src benchmarks experiments tests figures scripts` exited 0. The focused suite (`python -m pytest -q tests/test_vault.py tests/test_keyring.py`) passed 90 tests in 14.83 seconds. The complete suite (`python -m pytest -q`) passed 254 tests in 20.24 seconds.

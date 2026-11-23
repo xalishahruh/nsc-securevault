@@ -2,19 +2,20 @@
 
 import os
 import re
+from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
 
 from securevault.container import (
-    CIPHER_CBC, CIPHER_GCM, KEY_PROT_KWP, MAX_CIPHERTEXT_SIZE,
+    CIPHER_CBC, CIPHER_GCM, KEY_DESC_SIZE, KEY_PROT_KWP, MAX_CIPHERTEXT_SIZE,
     ContainerHeader, ParsedContainer, parse_container, serialize_container,
 )
 from securevault.crypto.cbc import decrypt_cbc, encrypt_cbc, generate_cbc_iv
 from securevault.crypto.gcm import GCM_TAG_SIZE, decrypt_gcm, encrypt_gcm, generate_gcm_dek, generate_gcm_nonce
 from securevault.errors import ModeMismatchError, VaultError
 from securevault.file_service import MAX_CONTAINER_SIZE
-from securevault.key_wrap import wrap_dek
-from securevault.keyring import KEYRING_SIZE, Keyring, create_keyring, unlock_keyring
+from securevault.key_wrap import KEK_SIZE, WRAPPED_DEK_SIZE, wrap_dek
+from securevault.keyring import KEYRING_SIZE, Keyring, create_keyring, protect_keyring, unlock_keyring
 from securevault.manifest import AAD_SIZE, MAX_ENTRIES, MAX_METADATA_SIZE, Manifest, open_manifest, seal_manifest
 from securevault.vault_storage import (
     Storage, directory, identity, open_storage, path_directory, publish, read, write_new,
@@ -50,6 +51,16 @@ def _record(file_id: bytes, object_id: bytes, cipher: int, ring: Keyring) -> dic
         "file_id": file_id.hex(), "object_id": object_id.hex(), "cipher_id": cipher,
         "key_protection_id": KEY_PROT_KWP, "kek_generation_id": ring.kek_generation_id.hex(),
     }
+
+
+def _records(manifest: Manifest, ring: Keyring) -> list[dict]:
+    return [_record(entry.file_id, entry.object_id, entry.cipher_id, ring) for entry in manifest.files]
+
+
+def _file_id(value: str) -> bytes:
+    if type(value) is not str or re.fullmatch("[0-9a-f]{32}", value) is None:
+        raise VaultError("Invalid file identifier.")
+    return bytes.fromhex(value)
 
 
 def _decode_object(
@@ -100,7 +111,8 @@ def _activate(store: Storage, stage: int) -> None:
 
 def _commit(
     store: Storage, lock: int, previous: bytes | None, ring: Keyring, kek: bytes,
-    records: list[dict], *, new_object: tuple[bytes, bytes, bytes, bytes] | None = None,
+    records: list[dict], *,
+    new_objects: Iterable[tuple[bytes, bytes, bytes, bytes | None]] = (),
 ) -> None:
     generation = os.urandom(16)
     name = generation.hex()
@@ -117,14 +129,19 @@ def _commit(
         verified = _open_manifest(read(stage, "manifest.svmf", _MANIFEST_LIMIT), generation, ring, kek)
         if read(stage, "keyring", KEYRING_SIZE) != ring_data:
             raise VaultError("Staged keyring failed verification.")
-        if new_object is not None:
-            file_id, object_id, encoded, plaintext = new_object
+        for file_id, object_id, encoded, plaintext in new_objects:
             write_new(stage, "object", encoded)
             raw = read(stage, "object", MAX_CONTAINER_SIZE)
             parsed, dek = _decode_object(verified, file_id, object_id, raw, ring, kek)
-            if _decrypt_object(parsed, dek, verified.file(file_id).cipher_id) != plaintext:
+            entry = verified.file(file_id)
+            if raw != encoded or (
+                plaintext is not None and _decrypt_object(parsed, dek, entry.cipher_id) != plaintext
+            ):
                 raise VaultError("Staged object failed verification.")
-            publish(stage, "object", store.objects, verified.file(file_id).object_path.name)
+            publish(stage, "object", store.objects, entry.object_path.name)
+            if read(store.objects, entry.object_path.name, MAX_CONTAINER_SIZE) != encoded:
+                raise VaultError("Published object failed verification.")
+            del raw, parsed, dek
         publish(stage, "keyring", store.keyrings, name + ".keys")
         os.mkdir(name, 0o700, dir_fd=store.generations)
         with directory(store.generations, name) as target:
@@ -134,10 +151,6 @@ def _commit(
         if published != verified or read(store.keyrings, name + ".keys", KEYRING_SIZE) != ring_data:
             raise VaultError("Published generation failed verification.")
         _verify_inventory(store, published, ring, kek, authenticate_gcm=True)
-        if new_object is not None and read(
-            store.objects, published.file(file_id).object_path.name, MAX_CONTAINER_SIZE,
-        ) != encoded:
-            raise VaultError("Published object failed verification.")
         store.check_layout()
         store.check_writer(lock)
         if previous is None:
@@ -240,15 +253,75 @@ class Vault:
                 current = self._active(store, ring, kek, keyring_data)
                 if len(current.files) >= MAX_ENTRIES:
                     raise VaultError("Vault entry limit reached.")
-                records = [_record(entry.file_id, entry.object_id, entry.cipher_id, ring) for entry in current.files]
+                records = _records(current, ring)
                 records.append(_record(file_id, object_id, cipher, ring))
                 _commit(store, lock, current.generation_id, ring, kek, records,
-                        new_object=(file_id, object_id, encoded, plaintext))
+                        new_objects=[(file_id, object_id, encoded, plaintext)])
             return file_id.hex()
 
+    def change_password(self, new_password: str | bytes) -> None:
+        """Publish a fresh password wrapper for the existing KEK and lock the session."""
+        with self._open() as (store, ring, kek, keyring_data), store.writer() as lock:
+            current = self._active(store, ring, kek, keyring_data)
+            updated = protect_keyring(new_password, kek, ring.vault_id, ring.kek_generation_id, ring.parameters)
+            if unlock_keyring(updated.serialize(), new_password) != kek:
+                raise VaultError("New keyring failed verification.")
+            _commit(store, lock, current.generation_id, updated, kek, _records(current, updated))
+        self.lock()
+
+    def rotate_kek(self, password: str | bytes) -> None:
+        """Rotate the vault KEK and rewrap all live DEKs while preserving payload bytes."""
+        with self._open() as (store, ring, kek, keyring_data), store.writer() as lock:
+            current = self._active(store, ring, kek, keyring_data)
+            if unlock_keyring(keyring_data, password) != kek:
+                raise VaultError("Current keyring failed verification.")
+            next_kek = os.urandom(KEK_SIZE)
+            updated = protect_keyring(password, next_kek, ring.vault_id, os.urandom(16), ring.parameters)
+            if unlock_keyring(updated.serialize(), password) != next_kek:
+                raise VaultError("New keyring failed verification.")
+            records = _records(current, updated)
+            object_ids = [os.urandom(16) for _ in records]
+            for record, object_id in zip(records, object_ids):
+                record["object_id"] = object_id.hex()
+
+            def rewrapped_objects():
+                for entry, object_id in zip(current.files, object_ids):
+                    raw = read(store.objects, entry.object_path.name, MAX_CONTAINER_SIZE)
+                    container, dek = _decode_object(current, entry.file_id, entry.object_id, raw, ring, kek)
+                    if entry.cipher_id == CIPHER_GCM:
+                        _decrypt_object(container, dek, entry.cipher_id)
+                    wrapped = wrap_dek(next_kek, entry.file_id, entry.cipher_id, dek)
+                    # Replace only the fixed-width KWP record. Keep SVLT AAD, payload and tag byte-identical.
+                    offset = len(container.immutable_header_bytes) + KEY_DESC_SIZE
+                    encoded = raw[:offset] + wrapped + raw[offset + WRAPPED_DEK_SIZE:]
+                    yield entry.file_id, object_id, encoded, None
+
+            _commit(store, lock, current.generation_id, updated, next_kek, records,
+                    new_objects=rewrapped_objects())
+        self.lock()
+
+    def rotate_dek(self, file_id: str) -> None:
+        """Authenticate and reencrypt one GCM file with a fresh DEK and nonce."""
+        identifier = _file_id(file_id)
+        with self._open() as (store, ring, kek, keyring_data), store.writer() as lock:
+            current = self._active(store, ring, kek, keyring_data)
+            entry = current.file(identifier)
+            if entry.cipher_id != CIPHER_GCM:
+                raise ModeMismatchError("File key rotation requires an authenticated GCM payload.")
+            raw = read(store.objects, entry.object_path.name, MAX_CONTAINER_SIZE)
+            container, dek = _decode_object(current, entry.file_id, entry.object_id, raw, ring, kek)
+            plaintext = _decrypt_object(container, dek, entry.cipher_id)
+            encoded = _encrypt_object(plaintext, identifier, entry.cipher_id, kek)
+            object_id = os.urandom(16)
+            records = [
+                _record(item.file_id, object_id if item.file_id == identifier else item.object_id, item.cipher_id, ring)
+                for item in current.files
+            ]
+            _commit(store, lock, current.generation_id, ring, kek, records,
+                    new_objects=[(identifier, object_id, encoded, plaintext)])
+
     def extract(self, file_id: str, output: Path, *, require_mode: str | None = None) -> str:
-        if type(file_id) is not str or re.fullmatch("[0-9a-f]{32}", file_id) is None:
-            raise VaultError("Invalid file identifier.")
+        identifier = _file_id(file_id)
         if require_mode is not None and require_mode not in _MODES:
             raise ModeMismatchError("Unsupported cipher policy.")
         output = Path(output)
@@ -256,7 +329,7 @@ class Vault:
             raise VaultError("Unsafe output name.")
         with self._open() as (store, ring, kek, keyring_data):
             manifest = self._active(store, ring, kek, keyring_data)
-            entry = manifest.file(bytes.fromhex(file_id))
+            entry = manifest.file(identifier)
             if require_mode is not None and _MODES[require_mode] != entry.cipher_id:
                 raise ModeMismatchError("File does not satisfy the required cipher policy.")
             raw = read(store.objects, entry.object_path.name, MAX_CONTAINER_SIZE)

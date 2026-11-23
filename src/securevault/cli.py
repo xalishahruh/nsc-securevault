@@ -46,7 +46,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     p_vault = subparsers.add_parser("vault", help="Manage an encrypted vault")
     commands = p_vault.add_subparsers(dest="action", required=True)
-    for action in ("init", "unlock", "list", "inspect", "add", "extract"):
+    for action in ("init", "unlock", "list", "inspect", "add", "extract", "change-password", "rotate-kek", "rotate-dek"):
         command = commands.add_parser(action)
         command.add_argument("--root", type=Path, required=True)
         if action == "add":
@@ -56,6 +56,8 @@ def create_parser() -> argparse.ArgumentParser:
             command.add_argument("--file-id", required=True)
             command.add_argument("--output", type=Path, required=True)
             command.add_argument("--require-mode", choices=["gcm", "cbc"])
+        elif action == "rotate-dek":
+            command.add_argument("--file-id", required=True)
 
     return parser
 
@@ -79,7 +81,6 @@ def _run_vault(args) -> int:
         return 0
     vault = Vault(args.root)
     vault.unlock(password)
-    del password
     try:
         if args.action == "unlock":
             print("Vault verified. Access ends when this command exits.")
@@ -95,6 +96,18 @@ def _run_vault(args) -> int:
             mode = vault.extract(args.file_id, args.output, require_mode=args.require_mode)
             if mode == "cbc":
                 print("Warning: AES-CBC ciphertext is unauthenticated.", file=sys.stderr)
+        elif args.action == "change-password":
+            updated = _vault_password("New vault password: ")
+            if updated != _vault_password("Confirm new vault password: "):
+                raise VaultError("Passwords do not match.")
+            vault.change_password(updated)
+            print("Vault password changed.")
+        elif args.action == "rotate-kek":
+            vault.rotate_kek(password)
+            print("Vault KEK rotated.")
+        elif args.action == "rotate-dek":
+            vault.rotate_dek(args.file_id)
+            print("File DEK rotated.")
     finally:
         vault.lock()
     return 0

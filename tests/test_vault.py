@@ -13,6 +13,8 @@ from securevault.container import parse_container, serialize_container
 from securevault.errors import (
     AuthenticationError, InvalidKeyError, KeyringError, ManifestError, ModeMismatchError, VaultError,
 )
+from securevault.key_wrap import unwrap_dek
+from securevault.keyring import Keyring, unlock_keyring
 from securevault.vault import Vault
 
 
@@ -297,7 +299,7 @@ import sys
 from pathlib import Path
 import securevault.vault as module
 
-root, source, phase = sys.argv[1:]
+root, source, phase, *action = sys.argv[1:]
 vault = module.Vault(Path(root))
 vault.unlock("synthetic vault test password")
 
@@ -308,6 +310,13 @@ if phase == "stage":
         if name == "manifest.svmf":
             os._exit(71)
     module.write_new = write_then_stop
+elif phase == "object":
+    original = module.publish
+    def publish_then_stop(stage, name, destination, target):
+        original(stage, name, destination, target)
+        if name == "object":
+            os._exit(71)
+    module.publish = publish_then_stop
 else:
     original = module.os.replace
     def stop_at_activation(source, destination, **kwargs):
@@ -316,7 +325,12 @@ else:
         os._exit(71)
     module.os.replace = stop_at_activation
 
-vault.add(Path(source))
+if action == ["password"]:
+    vault.change_password("synthetic changed password")
+elif action == ["kek"]:
+    vault.rotate_kek("synthetic vault test password")
+else:
+    vault.add(Path(source))
 """
 
 
@@ -438,3 +452,186 @@ def test_cli_refuses_visible_password_prompt(tmp_path):
     assert "hidden interactive password" in result.stderr
     assert PASSWORD not in result.stderr + result.stdout
     assert not (tmp_path / "vault").exists()
+
+
+def test_change_password_preserves_kek_and_objects(active_vault):
+    base, root, vault = active_vault
+    file_id = add_file(base, vault)
+    snapshot = {path: path.read_bytes() for path in objects(root)}
+    old_manifest, old_ring_path = active_paths(root)
+    old_data = old_ring_path.read_bytes()
+    old_ring = Keyring.parse(old_data)
+    stale = Vault(root)
+    stale.unlock(PASSWORD)
+
+    updated_password = "synthetic replacement password"
+    vault.change_password(updated_password)
+    new_manifest, new_ring_path = active_paths(root)
+    assert old_manifest != new_manifest and old_manifest.exists()
+    assert snapshot == {path: path.read_bytes() for path in objects(root)}
+    new_data = new_ring_path.read_bytes()
+    new_ring = Keyring.parse(new_data)
+    assert new_ring.salt != old_ring.salt
+    assert (new_ring.vault_id, new_ring.kek_generation_id) == (old_ring.vault_id, old_ring.kek_generation_id)
+    assert unlock_keyring(old_data, PASSWORD) == unlock_keyring(new_data, updated_password)
+    with pytest.raises(VaultError, match="locked"):
+        vault.list_files()
+    with pytest.raises(VaultError, match="keyring changed"):
+        stale.list_files()
+    with pytest.raises(KeyringError):
+        vault.unlock(PASSWORD)
+    vault.unlock(updated_password)
+    vault.extract(file_id, base / "recovered")
+    assert (base / "recovered").read_bytes() == b"fixture"
+
+
+def test_rotate_kek_rewraps_both_modes_without_payload_changes(active_vault):
+    base, root, vault = active_vault
+    gcm_id = add_file(base, vault, "gcm", b"GCM")
+    cbc_id = add_file(base, vault, "cbc", b"CBC", mode="cbc")
+    old_objects = {parse_container(path.read_bytes()).header.file_id: path for path in objects(root)}
+    old_keyring = active_paths(root)[1].read_bytes()
+    old_kek = unlock_keyring(old_keyring, PASSWORD)
+    old_current = (root / "CURRENT").read_bytes()
+
+    with pytest.raises(KeyringError):
+        vault.rotate_kek("wrong password")
+    assert (root / "CURRENT").read_bytes() == old_current
+
+    vault.rotate_kek(PASSWORD)
+    new_keyring = active_paths(root)[1].read_bytes()
+    new_kek = unlock_keyring(new_keyring, PASSWORD)
+    old_ring, new_ring = Keyring.parse(old_keyring), Keyring.parse(new_keyring)
+    assert new_kek != old_kek and new_ring.kek_generation_id != old_ring.kek_generation_id
+    assert new_ring.vault_id == old_ring.vault_id and new_ring.salt != old_ring.salt
+    new_objects = [
+        path for path in objects(root) if path not in old_objects.values()
+    ]
+    assert len(new_objects) == 2
+    for path in new_objects:
+        raw = path.read_bytes()
+        new = parse_container(raw)
+        file_id, cipher = new.header.file_id, new.header.cipher_id
+        previous = old_objects[file_id].read_bytes()
+        old = parse_container(previous)
+        assert raw[:51] == previous[:51] and raw[115:] == previous[115:]
+        assert new.key_record != old.key_record
+        assert unwrap_dek(new_kek, new.key_record, file_id, cipher) == unwrap_dek(
+            old_kek, old.key_record, file_id, cipher,
+        )
+        with pytest.raises(InvalidKeyError):
+            unwrap_dek(old_kek, new.key_record, file_id, cipher)
+    assert all(path.exists() for path in old_objects.values())
+    with pytest.raises(VaultError, match="locked"):
+        vault.list_files()
+    fresh = Vault(root)
+    fresh.unlock(PASSWORD)
+    for file_id, expected in ((gcm_id, b"GCM"), (cbc_id, b"CBC")):
+        output = base / file_id
+        fresh.extract(file_id, output)
+        assert output.read_bytes() == expected
+
+
+def test_rotate_dek_reencrypts_only_selected_gcm_file(active_vault):
+    base, root, vault = active_vault
+    gcm = add_file(base, vault, "gcm", b"authenticated fixture")
+    cbc = add_file(base, vault, "cbc", mode="cbc")
+    original = set(objects(root))
+    accepted = (root / "CURRENT").read_bytes()
+    with pytest.raises(ModeMismatchError):
+        vault.rotate_dek(cbc)
+    assert (root / "CURRENT").read_bytes() == accepted
+
+    old = next(container for path in original
+               if (container := parse_container(path.read_bytes())).header.file_id.hex() == gcm)
+    kek = unlock_keyring(active_paths(root)[1].read_bytes(), PASSWORD)
+    vault.rotate_dek(gcm)
+    new_path, = set(objects(root)) - original
+    new = parse_container(new_path.read_bytes())
+    assert new.header.file_id == old.header.file_id
+    assert new.header.iv_or_nonce != old.header.iv_or_nonce
+    assert new.ciphertext != old.ciphertext and new.gcm_tag != old.gcm_tag
+    assert unwrap_dek(kek, new.key_record, new.header.file_id, 1) != unwrap_dek(
+        kek, old.key_record, old.header.file_id, 1,
+    )
+    output = base / "recovered"
+    vault.extract(gcm, output)
+    assert output.read_bytes() == b"authenticated fixture"
+    assert dict(vault.list_files()) == {gcm: "gcm", cbc: "cbc"}
+
+
+@pytest.mark.parametrize("action", ["password", "kek", "dek"])
+def test_lifecycle_rejects_corrupted_gcm_without_activating(active_vault, action):
+    base, root, vault = active_vault
+    damaged_id = add_file(base, vault, "damaged", b"tampered fixture")
+    healthy_id = add_file(base, vault, "healthy", b"good fixture")
+    encrypted = next(path for path in objects(root)
+                     if parse_container(path.read_bytes()).header.file_id.hex() == damaged_id)
+    raw = bytearray(encrypted.read_bytes())
+    raw[115] ^= 1
+    encrypted.write_bytes(raw)
+    accepted = (root / "CURRENT").read_bytes()
+    with pytest.raises(AuthenticationError):
+        if action == "password":
+            vault.change_password("synthetic changed password")
+        elif action == "kek":
+            vault.rotate_kek(PASSWORD)
+        else:
+            vault.rotate_dek(healthy_id)
+    assert (root / "CURRENT").read_bytes() == accepted
+    assert not list((root / "staging").iterdir())
+
+
+@pytest.mark.parametrize("action,phase", [
+    ("password", "before"), ("password", "after"),
+    ("kek", "before"), ("kek", "after"), ("kek", "object"),
+])
+def test_lifecycle_process_exit_preserves_complete_generation(active_vault, action, phase):
+    base, root, vault = active_vault
+    file_id = add_file(base, vault)
+    other_id = add_file(base, vault, "other", b"second file")
+    accepted = (root / "CURRENT").read_bytes()
+    previous_manifest, previous_ring = active_paths(root)
+    crashed = subprocess.run(
+        [sys.executable, "-c", _CRASH_WRITER, str(root), str(base / "input"), phase, action],
+        capture_output=True, timeout=20,
+    )
+    assert crashed.returncode == 71, crashed.stderr.decode()
+    assert ((root / "CURRENT").read_bytes() != accepted) is (phase == "after")
+    assert previous_manifest.is_file() and previous_ring.is_file()
+    fresh = Vault(root)
+    if action == "password":
+        changed = "synthetic changed password"
+        current, wrong = (changed, PASSWORD) if phase == "after" else (PASSWORD, changed)
+        with pytest.raises(KeyringError):
+            fresh.unlock(wrong)
+    else:
+        current = PASSWORD
+        old = previous_ring.read_bytes()
+        active = active_paths(root)[1].read_bytes()
+        assert (unlock_keyring(old, PASSWORD) != unlock_keyring(active, PASSWORD)) is (phase == "after")
+    fresh.unlock(current)
+    for ident, data in ((file_id, b"fixture"), (other_id, b"second file")):
+        output = base / ident
+        fresh.extract(ident, output)
+        assert output.read_bytes() == data
+
+
+def test_lifecycle_cli_dispatch(active_vault, monkeypatch, capsys):
+    base, root, vault = active_vault
+    ident = add_file(base, vault)
+    replacement = "synthetic new CLI password"
+    prompts = iter((PASSWORD, replacement, replacement, replacement, replacement))
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(prompts))
+    for command, args, message in (
+        ("change-password", [], "password changed"),
+        ("rotate-kek", [], "KEK rotated"),
+        ("rotate-dek", ["--file-id", ident], "DEK rotated"),
+    ):
+        assert main(["vault", command, "--root", str(root), *args]) == 0
+        output = capsys.readouterr()
+        assert message in output.out
+        assert replacement not in output.out + output.err
+    vault.unlock(replacement)
+    vault.extract(ident, base / "recovered")
+    assert (base / "recovered").read_bytes() == b"fixture"

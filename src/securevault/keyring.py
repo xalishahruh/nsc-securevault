@@ -95,16 +95,25 @@ def create_keyring(
     parameters: KDFParameters = DEFAULT_KDF_PARAMETERS,
 ) -> tuple[Keyring, bytes]:
     """Create a keyring and return its new KEK for immediate caller use."""
-    parameters.validate()
     vault_id = os.urandom(16)
     generation_id = os.urandom(16)
-    salt = os.urandom(SALT_SIZE)
     kek = os.urandom(KEK_SIZE)
+    return protect_keyring(password, kek, vault_id, generation_id, parameters), kek
+
+
+def protect_keyring(
+    password: str | bytes, kek: bytes, vault_id: bytes, kek_generation_id: bytes,
+    parameters: KDFParameters = DEFAULT_KDF_PARAMETERS,
+) -> Keyring:
+    """Wrap a 32-byte KEK with a fresh salt and the specified SVKR associations."""
+    _validate_ids(vault_id, kek_generation_id)
+    if not isinstance(kek, bytes) or len(kek) != KEK_SIZE:
+        raise KeyringError("Vault KEK must be exactly 32 bytes.")
+    salt = os.urandom(SALT_SIZE)
     unlock_key = derive_unlock_key(password, salt, parameters)
-    wrapped = aes_key_wrap_with_padding(unlock_key, vault_id + generation_id + kek)
-    record = Keyring(vault_id, generation_id, salt, parameters, wrapped)
+    wrapped = aes_key_wrap_with_padding(unlock_key, vault_id + kek_generation_id + kek)
     assert len(wrapped) == WRAPPED_PAYLOAD_SIZE
-    return record, kek
+    return Keyring(vault_id, kek_generation_id, salt, parameters, wrapped)
 
 
 def unlock_keyring(
