@@ -66,3 +66,7 @@ class SameFileError(FileServiceError):
 class PathSecurityError(FileServiceError):
     """Raised when path traversal or forbidden symlink is encountered."""
 
+
+
+class ManifestError(SecureVaultError):
+    """Raised when a manifest format or expected association is invalid."""

@@ -1,4 +1,6 @@
-# C06 Architecture Conformance
+# SecureVault Architecture Conformance
+
+## C06 key hierarchy
 
 **Baseline:** C05 `59bee081cbd8797455c98954fd8ed5b61af5af49`
 
@@ -44,6 +46,18 @@ python -m pytest -q
 
 The focused C06 checks are in `tests/test_keyring.py` and cover Argon2id output/profile, independent salts and KEKs, exact SVKR layout/size, password unlock, incorrect password, modified wrapped data/identifiers, malformed records and unsupported/bounded parameters, DEK KWP size/round-trip and wrong association. The complete suite checks C05 compatibility. Results are recorded with the C06 handoff; this document does not claim a test result by itself.
 
-## Pending C07–C12 integration
+### Integration pending at the C06 checkpoint
 
 The following remain unimplemented and must be designed and verified in their assigned later checkpoints: authenticated encrypted manifest; trusted mode and key-protection policy; vault directory/state model and CURRENT pointer; transactional object/keyring/manifest publication and crash recovery; user-facing password prompting and short-lived unlock session; password change; manual KEK rotation and generation migration; independently protected encrypted recovery backup; managed-vault CLI; storage permissions and platform-specific operational validation. Do not claim rotation, recovery, rollback protection, or authenticated manifest support from C06.
+
+## C07 authenticated manifest
+
+`securevault.manifest` implements the SVMF v1 envelope from Notion §10 with the approved C07 schema completion rules. The 64-byte header and 40-byte wrapped manifest key form the exact 104-byte GCM AAD. The remaining bytes are the ciphertext and 16-byte tag. The codec enforces the 16 MiB and 10,000-entry limits before unwrapping the key or decrypting.
+
+- `seal_manifest(document, kek)` validates the five-field document, sorts the file array by file ID, and encodes compact, recursively key-sorted UTF-8 JSON. Each call uses a fresh manifest data key and nonce.
+- `open_manifest(data, kek, ...)` requires the KEK and vault/KEK generation IDs from verified SVKR context, plus the expected manifest generation ID from the caller. After GCM verification, it rejects duplicate keys and IDs, invalid schema or types, noncanonical bytes and inconsistent IDs or counts. It returns immutable metadata.
+- Use the authenticated entry's `object_path` to resolve `objects/{object_id}.svlt`. `Manifest.unwrap_file_dek` checks the selected object ID, verified KEK generation, parsed file ID, expected cipher and wrapped-key protection before passing trusted IDs to the existing DEK unwrap routine. These checks protect the association. CBC ciphertext still lacks authentication.
+
+MAN-01 through MAN-04 are in `tests/test_manifest.py`. Tests include independent AES-GCM envelopes containing invalid metadata and a real SVKR unlock-to-manifest round trip. The C08 integration must bind the supplied object ID to the opened file and enforce path confinement, symlink rejection and generation transactions. SVMF alone cannot detect replay of an older valid generation.
+
+Local validation used Python 3.15.2 through the repository virtual environment. `python -m compileall -q src benchmarks experiments tests figures scripts` exited 0. Running `python -m pytest -q tests/test_manifest.py` with `-k man01`, `-k man02`, `-k man03`, and `-k man04` passed 4, 13, 28, and 2 tests respectively. The full `python -m pytest -q` run passed 213 tests in 6.27 seconds.
