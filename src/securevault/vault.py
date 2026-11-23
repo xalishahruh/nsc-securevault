@@ -60,10 +60,14 @@ def _decode_object(
     return container, dek
 
 
-def _verify_inventory(store: Storage, manifest: Manifest, ring: Keyring, kek: bytes) -> None:
+def _verify_inventory(
+    store: Storage, manifest: Manifest, ring: Keyring, kek: bytes, *, authenticate_gcm: bool = False,
+) -> None:
     for entry in manifest.files:
         raw = read(store.objects, entry.object_path.name, MAX_CONTAINER_SIZE)
-        _decode_object(manifest, entry.file_id, entry.object_id, raw, ring, kek)
+        container, dek = _decode_object(manifest, entry.file_id, entry.object_id, raw, ring, kek)
+        if authenticate_gcm and entry.cipher_id == CIPHER_GCM:
+            _decrypt_object(container, dek, entry.cipher_id)
 
 
 def _decrypt_object(container: ParsedContainer, dek: bytes, cipher: int) -> bytes:
@@ -129,7 +133,7 @@ def _commit(
         published = _load_manifest(store, generation, ring, kek)
         if published != verified or read(store.keyrings, name + ".keys", KEYRING_SIZE) != ring_data:
             raise VaultError("Published generation failed verification.")
-        _verify_inventory(store, published, ring, kek)
+        _verify_inventory(store, published, ring, kek, authenticate_gcm=True)
         if new_object is not None and read(
             store.objects, published.file(file_id).object_path.name, MAX_CONTAINER_SIZE,
         ) != encoded:

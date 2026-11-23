@@ -117,6 +117,23 @@ def test_no_plaintext_on_bad_tag_and_no_cbc_downgrade(active_vault):
     assert not output.exists()
 
 
+def test_corrupted_existing_gcm_ciphertext_blocks_next_generation(active_vault):
+    base, root, vault = active_vault
+    add_file(base, vault, "existing", b"existing payload")
+    pointer = (root / "CURRENT").read_bytes()
+    encrypted, = objects(root)
+    raw = bytearray(encrypted.read_bytes())
+    parsed = parse_container(bytes(raw))
+    raw[len(raw) - len(parsed.gcm_tag) - len(parsed.ciphertext)] ^= 1
+    encrypted.write_bytes(raw)
+
+    with pytest.raises(AuthenticationError):
+        add_file(base, vault, "next", b"new payload")
+
+    assert (root / "CURRENT").read_bytes() == pointer
+    assert not list((root / "staging").iterdir())
+
+
 def test_object_swap_and_key_record_association(active_vault):
     base, root, vault = active_vault
     first = add_file(base, vault)
