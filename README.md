@@ -153,24 +153,27 @@ python scripts/run_demo.py
 
 ## 5. Automated Test Suite
 
-The test suite contains 110 automated pytest tests covering functional operations, security boundaries, container parsing, and statistical calculations:
+The pytest suite covers functional operations, security boundaries, container parsing, and statistical calculations:
 
 ```bash
 # Run the complete test suite
 python -m pytest -v
 ```
 
-### Test Suite Structure:
-- `tests/test_gcm.py` (12 tests): AES-GCM round-trips across edge sizes, wrong-key rejection, ciphertext/tag/AAD tamper detection.
-- `tests/test_cbc.py` (10 tests): AES-CBC round-trips, PKCS#7 padding boundaries, corrupted IV/ciphertext behavior.
-- `tests/test_container.py` (14 tests): Binary `.svlt` v1 header serialization, strict field validation, truncation and malformed size rejection.
-- `tests/test_tamper.py` (10 tests): Negative security scenarios, GCM header/tag rejection, CBC bit-flip corruption without authentication, cipher mode downgrade prevention.
-- `tests/test_functional_e2e.py` (12 tests): End-to-end file encryption/decryption across diverse file formats (PDF, JPEG, MP4, TXT) and payload boundaries (0B, 1B, 15B, 16B, 17B, 31B, 32B, 64B, 1KiB, 64KiB).
-- `tests/test_safe_io.py` (20 tests): Exclusive staging, `os.link` atomic creation, owner permissions (`0600`), symlink rejection, concurrent writer mutual exclusion.
-- `tests/test_key_provider.py` (8 tests): External `.svkey` record parsing, file ID association checks, cipher mode validation.
-- `tests/test_key_recoverability.py` (10 tests): Mandatory key destination enforcement, rollback safety, refusal to unlink keys on container publication failure.
-- `tests/test_benchmark_modes.py` (5 tests): Benchmark matrix schema, 360-observation verification, parameter validation, artifact preservation.
-- `tests/test_benchmark_statistics.py` (9 tests): Statistical metric verification, formula correctness, strict validation of corrupted/incomplete datasets.
+### Test Suite Structure
+
+- `tests/test_gcm.py`: AES-GCM round-trips across edge sizes, wrong-key rejection, ciphertext/tag/AAD tamper detection.
+- `tests/test_cbc.py`: AES-CBC round-trips, PKCS#7 padding boundaries, corrupted IV/ciphertext behavior.
+- `tests/test_container.py`: Binary `.svlt` v1 header serialization, strict field validation, truncation and malformed size rejection.
+- `tests/test_tamper.py`: Negative security scenarios, GCM header/tag rejection, CBC bit-flip corruption without authentication, cipher mode downgrade prevention.
+- `tests/test_functional_e2e.py`: End-to-end file encryption/decryption across diverse file formats (PDF, JPEG, MP4, TXT) and payload boundaries (0B, 1B, 15B, 16B, 17B, 31B, 32B, 64B, 1KiB, 64KiB).
+- `tests/test_safe_io.py`: Exclusive staging, `os.link` atomic creation, owner permissions (`0600`), symlink rejection, concurrent writer mutual exclusion.
+- `tests/test_key_provider.py`: External `.svkey` record parsing, file ID association checks, cipher mode validation.
+- `tests/test_key_recoverability.py`: Mandatory key destination enforcement, rollback safety, refusal to unlink keys on container publication failure.
+- `tests/test_keyring.py`: Argon2id bounds, SVKR layout and authentication, and AES-KWP file key associations.
+- `tests/test_security_experiment_output.py`: Distinct authentication and structural outcomes, and preservation of existing evidence files.
+- `tests/test_benchmark_modes.py`: Benchmark matrix schema, 360-observation verification, parameter validation, artifact preservation.
+- `tests/test_benchmark_statistics.py`: Statistical metric verification, formula correctness, strict validation of corrupted/incomplete datasets.
 
 ---
 
@@ -340,4 +343,4 @@ The table below maps the 7 assessment criteria (totaling 100 marks) from the 6CO
 ### Platform Limitations:
 - **Hard-Link Publication:** `os.link()` requires source and destination to reside on the same filesystem volume. If atomic hard-linking is unsupported by the filesystem (e.g. cross-device links or certain network filesystems), SecureVault fails closed with `FileServiceError` rather than risking non-exclusive replacement.
 - **Timing Boundary:** Benchmark measurements capture in-memory cryptographic API duration calling the OpenSSL backend. They do not measure physical storage disk I/O or full file streaming overhead.
-- **Key Storage Boundary:** The existing file CLI still uses external `.svkey` DEK records, which require protected storage. C06 now provides Argon2id/SVKR and AES-KWP key-hierarchy library APIs, but they are not yet integrated into a managed vault or CLI; local KDF cost measurement is required before password-based vault initialization.
+- **Key Storage Boundary:** The existing file CLI still uses external `.svkey` DEK records, which require protected storage. C06 now provides Argon2id/SVKR and AES-KWP key-hierarchy library APIs, for use by the future managed vault. The legacy audit register records local KDF cost measurements and pending platform validation.
