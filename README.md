@@ -33,7 +33,7 @@ SecureVault is an engineering-grade Python file-encryption application implement
 
 ```bash
 # 1. Clone repository
-git clone --branch fix/c11-final-hardening https://github.com/xalishahruh/nsc-securevault.git
+git clone --branch feat/c12-final-acceptance https://github.com/xalishahruh/nsc-securevault.git
 cd nsc-securevault
 
 # 2. Create and activate a clean virtual environment
@@ -382,3 +382,5 @@ securevault vault restore --archive ./snapshot.svra --recovery-key ./offline/sna
 Backup prompts for the active password. Restore requires the matching offline key and prompts for a new password. Keep the key and archive in separate storage. Together they grant access to the snapshot. The destination must be a new path on a supported local POSIX filesystem. The archive contains the active generation only, with a 256 MiB encrypted payload limit that includes metadata and framed objects. The application processes whole buffers, so peak memory can be several times that limit. See [recovery conformance](docs/ARCHITECTURE_CONFORMANCE.md#c10-encrypted-backup-and-recovery) for interruption behavior and other limits.
 
 See the [final hardening register](docs/C11_1_HARDENING.md) for exact cryptographic lifecycle assumptions, verification results and remaining limits.
+
+For the submission candidate and clean-room reproduction commands, see [C12 technical acceptance](docs/C12_ACCEPTANCE.md).
