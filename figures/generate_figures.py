@@ -205,7 +205,7 @@ CONTAINER_SVG = """\
   <!-- GCM Tag -->
   <rect x="582" y="38" width="60" height="34" class="optional"/>
   <text x="612" y="55" class="label">GCM Tag</text>
-  <text x="612" y="66" class="bytes">16B (GHASH)</text>
+  <text x="612" y="66" class="bytes">16B (tag)</text>
   <!-- Total note -->
   <text x="660" y="52" class="note">Total:</text>
   <text x="660" y="65" class="note">48+3+CT+16</text>
@@ -432,7 +432,7 @@ def generate_f4_tamper_behavior() -> Path:
     cbc_results = [r for r in results if r["mode"] == "CBC"]
 
     def result_color(r):
-        if r["integrity_protected"] == "True":
+        if r["exception_type"] == "AuthenticationError":
             return "#2e7d32"
         if r["plaintext_published"] == "True" and r["plaintext_matches_original"] == "False":
             return "#e65100"
@@ -441,11 +441,12 @@ def generate_f4_tamper_behavior() -> Path:
         return "#bdbdbd"
 
     def result_label(r):
-        if r["integrity_protected"] == "True":
-            return "Tamper detected\n(no plaintext)"
-        if r["plaintext_published"] == "True" and r["plaintext_matches_original"] == "False":
-            return "Corrupted plaintext\naccepted silently"
-        return r["exception_type"]
+        return {
+            "#2e7d32": "Authentication rejected",
+            "#e65100": "Corrupted plaintext returned",
+            "#f9a825": r["exception_type"],
+            "#bdbdbd": "Other outcome",
+        }[result_color(r)]
 
     # GCM subplot
     ax1.set_title("AES-256-GCM: Integrity Protection", fontsize=11, fontweight="bold", color="#1b5e20")
@@ -462,7 +463,7 @@ def generate_f4_tamper_behavior() -> Path:
     ax1.set_xticks([])
     ax1.set_xlim(0, 1.4)
     for i, r in enumerate(gcm_results):
-        ax1.text(1.05, i, result_label(r), va="center", fontsize=9, color="#1b5e20" if r["integrity_protected"] == "True" else "#c62828")
+        ax1.text(1.05, i, result_label(r), va="center", fontsize=9, color=result_color(r))
     ax1.invert_yaxis()
     ax1.axvline(0, color="grey", linewidth=0.5)
     ax1.set_xlabel("")
@@ -483,12 +484,12 @@ def generate_f4_tamper_behavior() -> Path:
     ax2.set_xlim(0, 1.4)
     for i, r in enumerate(cbc_results):
         ax2.text(1.05, i, result_label(r), va="center", fontsize=9,
-                 color="#2e7d32" if r["integrity_protected"] == "True" else "#c62828" if r["plaintext_published"] == "True" else "#f57f17")
+                 color=result_color(r))
     ax2.invert_yaxis()
 
     # Legend
-    detected = mpatches.Patch(color="#2e7d32", label="Tamper detected — no plaintext published")
-    corrupted = mpatches.Patch(color="#e65100", label="Corrupted plaintext accepted silently")
+    detected = mpatches.Patch(color="#2e7d32", label="Authentication rejected in memory")
+    corrupted = mpatches.Patch(color="#e65100", label="Corrupted plaintext returned in memory")
     exc_patch = mpatches.Patch(color="#f9a825", label="Exception raised (structural / padding)")
     fig.legend(handles=[detected, corrupted, exc_patch], loc="lower center", ncol=3, fontsize=9, bbox_to_anchor=(0.5, 0.01))
 

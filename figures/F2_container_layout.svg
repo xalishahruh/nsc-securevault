@@ -53,7 +53,7 @@
   <!-- GCM Tag -->
   <rect x="582" y="38" width="60" height="34" class="optional"/>
   <text x="612" y="55" class="label">GCM Tag</text>
-  <text x="612" y="66" class="bytes">16B (GHASH)</text>
+  <text x="612" y="66" class="bytes">16B (tag)</text>
   <!-- Total note -->
   <text x="660" y="52" class="note">Total:</text>
   <text x="660" y="65" class="note">48+3+CT+16</text>

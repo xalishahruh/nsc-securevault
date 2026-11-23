@@ -105,7 +105,7 @@ Displays non-secret header fields: magic, version, cipher mode, file UUID, IV/no
 ### Command-Line Policy Flags
 | Flag | Behavior |
 |------|----------|
-| `--overwrite` | Permits replacing an existing output file (default is strict no-clobber protection via `os.link`). |
+| `decrypt --overwrite` | Permits replacing an existing plaintext destination. The ciphertext and key cannot be output destinations. |
 | `--require-mode gcm\|cbc` | Enforces caller-expected cipher mode; rejects container on mismatch to prevent cipher downgrade. |
 
 ---
@@ -120,7 +120,7 @@ python scripts/run_demo.py
 ### Demonstration Steps and Expected Behaviors:
 1. **Input File Selection:** 1,024-byte deterministic sample payload (`demo/samples/sample.txt`), baseline SHA-256 recorded.
 2. **GCM Encryption:** Generates fresh 256-bit DEK and 12-byte nonce; outputs `.svlt` container and 54-byte `.svkey`.
-3. **GCM Decryption:** Verifies 128-bit GHASH tag and header AAD prior to releasing plaintext.
+3. **GCM Decryption:** Verifies 128-bit GCM authentication tag and header AAD prior to releasing plaintext.
 4. **Exact-Byte Verification (GCM):** SHA-256 hash comparison confirms exact byte-for-byte recovery.
 5. **CBC Encryption:** Generates fresh 256-bit DEK and unpredictable 16-byte IV; applies PKCS#7 padding.
 6. **CBC Decryption:** Validates PKCS#7 unpadding and issues an explicit integrity limitation warning.
@@ -137,7 +137,7 @@ python scripts/run_demo.py
 - **Security Goal:** Authenticated Encryption with Associated Data (AEAD) providing confidentiality, ciphertext integrity, and origin authenticity.
 - **Key & Nonce Lifecycle:** Fresh 256-bit DEK via `os.urandom(32)` per encryption operation. Fresh 96-bit CSPRNG nonce via `os.urandom(12)`.
 - **Nonce Collision Analysis:** With 96-bit random nonces, birthday collision probability reaches $2^{-32}$ after approximately $2^{48}$ encryptions under the same key. SecureVault enforces a fresh random 256-bit DEK per file encryption, preventing multiple encryptions under any single key and neutralizing cross-file nonce collision risks.
-- **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Any modification to header metadata invalidates the 128-bit GHASH tag.
+- **Header Binding (AAD):** The 48-byte immutable container header (magic, version, cipher ID, flags, file UUID, nonce, ciphertext length) is cryptographically bound as GCM Authenticated Associated Data (AAD). Any modification to header metadata invalidates the 128-bit GCM authentication tag.
 - **Authentication Guarantee:** Tag forgery probability is bounded by $2^{-128}$ under standard cryptographic assumptions. Decryption strictly validates the authentication tag before writing or returning plaintext.
 
 ### AES-256-CBC (Cipher Block Chaining)
@@ -185,20 +185,20 @@ python -m experiments.security_experiments --output /tmp/securevault-security-ou
 
 ### Summary of Observed Outcomes:
 
-| Experiment ID | Mode | Target Element | Specific Modification | Expected Outcome | Observed Outcome | Plaintext Released? | Integrity Protected? |
+| Experiment ID | Mode | Target Element | Specific Modification | Expected Outcome | Observed Outcome | Plaintext returned in memory? | Authentication rejected? |
 |---|---|---|---|---|---|---|---|
 | **GCM-01** | GCM | Ciphertext | Flip byte at offset 51 | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
 | **GCM-02** | GCM | Auth Tag | Flip last byte of tag | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
 | **GCM-03** | GCM | Header (AAD) | Flip `file_id` byte in header | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
 | **GCM-04** | GCM | Key Material | Random 32-byte DEK | `AuthenticationError` | `AuthenticationError` | **No** | **Yes** |
-| **GCM-05** | GCM | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **Yes** |
+| **GCM-05** | GCM | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **No** (structural rejection) |
 | **CBC-01** | CBC | Ciphertext | Flip byte in block 1 | Corrupted plaintext | Corrupted plaintext accepted | **Yes** | **No** |
 | **CBC-02** | CBC | IV | Flip byte in IV slot | Corrupted block 0 | Corrupted block 0 accepted | **Yes** | **No** |
 | **CBC-03** | CBC | Key Material | Random 32-byte DEK | `PaddingError` | `PaddingError` (probabilistic) | **No** | **No** (unreliable) |
-| **CBC-04** | CBC | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **Yes** (format-level) |
+| **CBC-04** | CBC | Container Length | Truncate container by 50% | `MalformedContainerError` | `MalformedContainerError` | **No** | **No** (structural rejection) |
 | **CBC-05** | CBC | Non-last block CT | Controlled 3-block corruption | Valid PKCS#7 padding | Corrupted plaintext accepted | **Yes** | **No** |
 
-Full analysis and discussion available in `experiments/SECURITY_EXPERIMENTS.md`.
+Filesystem publication is exercised separately by the CLI demo and file service tests. Full analysis and discussion available in `experiments/SECURITY_EXPERIMENTS.md`.
 
 ---
 
@@ -267,7 +267,7 @@ python figures/generate_figures.py
 ```
 
 - **`figures/F1_architecture.svg`**: Architecture diagram showing CLI layer, file service safety boundaries, cryptographic engines (GCM/CBC), container serialization, key provider, and atomic file publication.
-- **`figures/F2_container_layout.svg`**: Binary format diagram showing the 48-byte immutable header (bound as GCM AAD), key descriptor, ciphertext payload, GCM 16-byte GHASH tag, and 54-byte `.svkey` structure.
+- **`figures/F2_container_layout.svg`**: Binary format diagram showing the 48-byte immutable header (bound as GCM AAD), key descriptor, ciphertext payload, 16-byte GCM authentication tag, and 54-byte `.svkey` structure.
 - **`figures/F3_performance.png`**: Mean latency bar charts (±1σ error bars) across sizes and log-scale box plots showing raw observation distributions.
 - **`figures/F4_tamper_behavior.png`**: Comparative horizontal chart contrasting GCM's tamper detection against CBC's silent acceptance of corrupted data.
 
@@ -312,13 +312,13 @@ The table below maps the 7 assessment criteria (totaling 100 marks) from the 6CO
 
 | Marking Criterion | Weight | Assessment Scope | Implementation & Evidence Mapping | Evidence Artifacts |
 |---|---|---|---|---|
-| **MC1: Introduction, Scenario & Research Formulation** | **8 marks** | Context, motivation, scenario, research question, objectives and scope. | `README.md` (Sections 1–4) | Research question and secure file-storage scope are stated; arbitrary binary formats are a compatibility requirement. |
-| **MC2: Background Research & Literature** | **12 marks** | Relevant cryptographic research and authoritative standards, with cited comparison of GCM and CBC. | Coursework report references; `experiments/SECURITY_EXPERIMENTS.md` | Cite original standards and relevant literature; distinguish evidence from theoretical security claims. |
-| **MC3: Design Choices & Security Justification** | **15 marks** | Threat model, key/nonce/IV policy, format and storage decisions, justified security controls. | `src/securevault/container.py`<br>`src/securevault/crypto/`<br>`src/securevault/key_provider.py`<br>`figures/F1_architecture.svg`<br>`figures/F2_container_layout.svg` | Explain threat assumptions, trusted mode policy, GCM AAD and CBC's lack of authentication. |
-| **MC4: Results, Critical Discussion & Conclusion** | **15 marks** | Interpret observed results, compare modes, explain limitations and answer the research question. | Coursework report; `experiments/SECURITY_EXPERIMENTS.md`<br>`figures/F3_performance.png`<br>`figures/F4_tamper_behavior.png` | Tie conclusions to measured results and observed tamper behavior; discuss validity threats and residual risks. |
-| **MC5: Report Presentation & Referencing** | **5 marks** | Required structure, academic presentation, citations, formatting and word limit. | Final coursework report and references | Apply the assignment's formatting and referencing rules; this criterion is report presentation, not software tests. |
-| **MC6: Working Software Implementation** | **25 marks** | Functional AES-256-GCM and AES-256-CBC file encryption/decryption, key handling, error handling and runnable application. | `src/securevault/`<br>`scripts/run_demo.py`<br>`tests/test_functional_e2e.py` | Demonstrate working CLI, safe key association and byte-exact recovery; distinguish implemented C05 behavior from C06 key hierarchy APIs. |
-| **MC7: Testing & Experimental Evaluation** | **20 marks** | Reproducible test evidence, tamper analysis, repeated encryption/decryption measurements at multiple sizes, statistics and interpretation. | `tests/`<br>`experiments/security_experiments.py`<br>`benchmarks/benchmark_modes.py`<br>`benchmarks/summarize.py`<br>`benchmarks/results/`<br>`experiments/results/` | Raw evidence supports both negative security tests and multi-size performance analysis; preserve committed CSVs and write new runs to fresh paths. |
+| **MC1: Introduction, security problem and scope** | **8 marks** | Context, motivation, scenario, research question, objectives and scope. | `README.md` (Sections 1–4) | Research question and secure file-storage scope are stated; arbitrary binary formats are a compatibility requirement. |
+| **MC2: Cryptographic research and technical understanding** | **12 marks** | Relevant cryptographic research and authoritative standards, with cited comparison of GCM and CBC. | Coursework report references; `experiments/SECURITY_EXPERIMENTS.md` | Cite original standards and relevant literature; distinguish evidence from theoretical security claims. |
+| **MC3: Design choices and security justification** | **15 marks** | Threat model, key/nonce/IV policy, format and storage decisions, justified security controls. | `src/securevault/container.py`<br>`src/securevault/crypto/`<br>`src/securevault/key_provider.py`<br>`figures/F1_architecture.svg`<br>`figures/F2_container_layout.svg` | Explain threat assumptions, trusted mode policy, GCM AAD and CBC's lack of authentication. |
+| **MC4: Evaluation, critical discussion and conclusion** | **15 marks** | Interpret observed results, compare modes, explain limitations and answer the research question. | Coursework report; `experiments/SECURITY_EXPERIMENTS.md`<br>`figures/F3_performance.png`<br>`figures/F4_tamper_behavior.png` | Tie conclusions to measured results and observed tamper behavior; discuss validity threats and residual risks. |
+| **MC5: Structure, presentation and referencing** | **5 marks** | Required structure, academic presentation, citations, formatting and word limit. | Final coursework report and references | Apply the assignment's formatting and referencing rules; this criterion is report presentation, not software tests. |
+| **MC6: Practical: correct implementation** | **25 marks** | Functional AES-256-GCM and AES-256-CBC file encryption/decryption, key handling, error handling and runnable application. | `src/securevault/`<br>`scripts/run_demo.py`<br>`tests/test_functional_e2e.py` | Demonstrate working CLI, safe key association and byte-exact recovery; distinguish implemented C05 behavior from C06 key hierarchy APIs. |
+| **MC7: Practical: testing, performance/security evidence and reproducibility** | **20 marks** | Reproducible test evidence, tamper analysis, repeated encryption/decryption measurements at multiple sizes, statistics and interpretation. | `tests/`<br>`experiments/security_experiments.py`<br>`benchmarks/benchmark_modes.py`<br>`benchmarks/summarize.py`<br>`benchmarks/results/`<br>`experiments/results/` | Raw evidence supports both negative security tests and multi-size performance analysis; preserve committed CSVs and write new runs to fresh paths. |
 
 ---
 

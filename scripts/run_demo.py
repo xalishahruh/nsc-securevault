@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,6 +46,11 @@ def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="securevault-demo-") as directory:
+        return _run_demo(Path(directory))
+
+
+def _run_demo(work_dir: Path) -> int:
     python_bin = sys.executable
     print("=" * 70)
     print("SecureVault: End-to-End Coursework Demonstration (6COSC033C CW1)")
@@ -67,12 +71,6 @@ def main() -> int:
     print(f"       Path:    {SAMPLE_FILE}")
     print(f"       Size:    {SAMPLE_FILE.stat().st_size} bytes")
     print(f"       SHA-256: {orig_hash}")
-
-    # Use an isolated run directory inside demo/run_workspace
-    work_dir = DEMO_DIR / "run_workspace"
-    if work_dir.exists():
-        shutil.rmtree(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
 
     gcm_svlt = work_dir / "sample_gcm.svlt"
     gcm_key = work_dir / "sample_gcm.svkey"
@@ -168,8 +166,8 @@ def main() -> int:
     ])
     print(f"       Exit code: {res.returncode} (expected: 2)")
     print(f"       Captured error: {res.stderr.strip()}")
-    assert res.returncode == 2, "Wrong key must fail with exit code 2"
-    assert not (work_dir / "wrong_key_out.txt").exists(), "Plaintext must not be published on wrong key"
+    if res.returncode != 2 or "InvalidKeyError" not in res.stderr or (work_dir / "wrong_key_out.txt").exists():
+        return 1
     print("       RESULT: PASSED - Wrong key rejected safely, no plaintext released.")
 
     # Step 9: Tampered GCM container failure
@@ -187,8 +185,8 @@ def main() -> int:
     ])
     print(f"       Exit code: {res.returncode} (expected: 2)")
     print(f"       Captured error: {res.stderr.strip()}")
-    assert res.returncode == 2, "Tampered container must fail with exit code 2"
-    assert not (work_dir / "tampered_out.txt").exists(), "Plaintext must not be published on tamper"
+    if res.returncode != 2 or "AuthenticationError" not in res.stderr or (work_dir / "tampered_out.txt").exists():
+        return 1
     print("       RESULT: PASSED - Tampered container rejected via AuthenticationError.")
 
     # Step 10: Existing-output preservation (no-clobber)
@@ -202,11 +200,9 @@ def main() -> int:
     ])
     print(f"       Exit code: {res.returncode} (expected: 2)")
     print(f"       Captured error: {res.stderr.strip()}")
-    assert res.returncode == 2, "Duplicate destination without --overwrite must fail"
+    if res.returncode != 2 or "FileExistsSecurityError" not in res.stderr:
+        return 1
     print("       RESULT: PASSED - FileExistsSecurityError raised; existing container preserved.")
-
-    # Clean up run_workspace after successful run
-    shutil.rmtree(work_dir)
 
     print("\n" + "=" * 70)
     print("ALL 10 DEMONSTRATION STEPS COMPLETED AND VERIFIED SUCCESSFULLY.")

@@ -22,7 +22,7 @@ def create_parser() -> argparse.ArgumentParser:
     p_enc.add_argument("--input", "-i", type=Path, required=True, help="Input plaintext file path")
     p_enc.add_argument("--output", "-o", type=Path, required=True, help="Output .svlt container file path")
     p_enc.add_argument("--key-output", "-k", type=Path, required=True, help="Output .svkey key file path")
-    p_enc.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing output files")
+    p_enc.add_argument("--overwrite", action="store_true", default=False, help=argparse.SUPPRESS)
 
     # --- decrypt ---
     p_dec = subparsers.add_parser("decrypt", help="Decrypt a .svlt file using an external key")

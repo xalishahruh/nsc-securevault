@@ -2,7 +2,7 @@
 
 import struct
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from securevault.errors import InvalidKeyError, ModeMismatchError
 
@@ -17,7 +17,7 @@ class ExternalKeyRecord:
     version: int
     file_id: bytes
     cipher_id: int
-    dek: bytes
+    dek: bytes = field(repr=False)
 
     def serialize(self) -> bytes:
         """Serialize into exact 54-byte external key record."""

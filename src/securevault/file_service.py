@@ -2,6 +2,7 @@
 
 import logging
 import os
+import stat
 import tempfile
 import warnings
 from pathlib import Path
@@ -17,6 +18,9 @@ from securevault.container import (
     CIPHER_CBC,
     KEY_PROT_EXTERNAL,
     MAX_CIPHERTEXT_SIZE,
+    HEADER_SIZE,
+    KEY_DESC_SIZE,
+    GCM_TAG_SIZE,
 )
 from securevault.crypto.gcm import (
     generate_gcm_dek,
@@ -30,16 +34,34 @@ from securevault.crypto.cbc import (
     encrypt_cbc,
     decrypt_cbc,
 )
-from securevault.key_provider import ExternalKeyRecord
+from securevault.key_provider import ExternalKeyRecord, KEY_RECORD_SIZE
+from securevault.key_wrap import WRAPPED_DEK_SIZE
 from securevault.errors import (
     FileExistsSecurityError,
     SameFileError,
     PathSecurityError,
     FileServiceError,
     ModeMismatchError,
-    AuthenticationError,
-    PaddingError,
 )
+
+MAX_CONTAINER_SIZE = HEADER_SIZE + KEY_DESC_SIZE + WRAPPED_DEK_SIZE + MAX_CIPHERTEXT_SIZE + GCM_TAG_SIZE
+
+
+def _read_bounded(path: Path, limit: int) -> bytes:
+    """Read a regular file within its size limit, even if it grows during the read."""
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise PathSecurityError("SecureVault inputs must be regular files, without symlinks.")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PathSecurityError("SecureVault inputs must be regular files.")
+        if metadata.st_size > limit:
+            raise FileServiceError(f"Input exceeds the supported limit of {limit} bytes.")
+        data = source.read(metadata.st_size)
+        if len(data) != metadata.st_size or source.read(1):
+            raise FileServiceError("Input size changed during reading.")
+        return data
 
 
 def _check_path_safety(src: Path, dst: Path, overwrite: bool = False) -> None:
@@ -54,7 +76,7 @@ def _check_path_safety(src: Path, dst: Path, overwrite: bool = False) -> None:
     src_resolved = src.resolve()
     dst_resolved = dst.resolve()
 
-    if src_resolved == dst_resolved:
+    if src_resolved == dst_resolved or (dst.exists() and src.samefile(dst)):
         raise SameFileError(f"Source and destination point to the same file: {src_resolved}")
 
     if dst.exists() and not overwrite:
@@ -154,11 +176,8 @@ def encrypt_file(
     if output_path.resolve() == key_output_path.resolve():
         raise SameFileError("Output container and key output cannot be the same file.")
 
-    plaintext = input_path.read_bytes()
-    if len(plaintext) > MAX_CIPHERTEXT_SIZE:
-        raise ValueError(
-            f"File size {len(plaintext)} exceeds maximum supported size {MAX_CIPHERTEXT_SIZE} bytes."
-        )
+    # CBC's mandatory final padding block must also fit the ciphertext limit.
+    plaintext = _read_bounded(input_path, MAX_CIPHERTEXT_SIZE - (mode_lower == "cbc"))
 
     file_id = os.urandom(16)
 
@@ -246,11 +265,12 @@ def decrypt_file(
 ) -> Dict[str, Any]:
     """Decrypt a .svlt container using an external key file and safely publish plaintext."""
     _check_path_safety(input_path, output_path, overwrite=overwrite)
-    if not key_file_path.exists():
-        raise FileNotFoundError(f"Key file does not exist: {key_file_path}")
+    _check_path_safety(key_file_path, output_path, overwrite=overwrite)
 
-    container_bytes = input_path.read_bytes()
+    container_bytes = _read_bounded(input_path, MAX_CONTAINER_SIZE)
     parsed = parse_container(container_bytes)
+    if parsed.key_protection_id != KEY_PROT_EXTERNAL:
+        raise ModeMismatchError("Standalone decryption requires an external-key container.")
 
     # Mode enforcement check
     if require_mode is not None:
@@ -261,7 +281,7 @@ def decrypt_file(
                 f"Mode policy violation: caller required mode '{req_norm}', but container has mode '{container_mode}'."
             )
 
-    key_bytes = key_file_path.read_bytes()
+    key_bytes = _read_bounded(key_file_path, KEY_RECORD_SIZE)
     key_record = ExternalKeyRecord.parse(key_bytes)
     key_record.validate_association(parsed.header.file_id, parsed.header.cipher_id)
 
@@ -299,10 +319,7 @@ def decrypt_file(
 
 def inspect_file(input_path: Path) -> Dict[str, Any]:
     """Inspect and return nonsecret structural metadata of a .svlt container without decryption."""
-    if not input_path.exists():
-        raise FileNotFoundError(f"File not found: {input_path}")
-
-    data = input_path.read_bytes()
+    data = _read_bounded(input_path, MAX_CONTAINER_SIZE)
     parsed = parse_container(data)
 
     mode_name = "AES-256-GCM" if parsed.header.cipher_id == CIPHER_GCM else "AES-256-CBC"

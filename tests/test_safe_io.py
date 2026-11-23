@@ -6,17 +6,65 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
+from securevault.container import KEY_PROT_KWP, parse_container, serialize_container
 from securevault.file_service import (
     encrypt_file,
     decrypt_file,
     _safe_write_bytes,
+    _read_bounded,
 )
 from securevault.errors import (
     FileExistsSecurityError,
     FileServiceError,
     SameFileError,
     AuthenticationError,
+    PathSecurityError,
+    ModeMismatchError,
 )
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_decrypt_overwrite_preserves_key(tmp_path, alias):
+    source = tmp_path / "source"
+    container = tmp_path / "encrypted"
+    key = tmp_path / "key"
+    source.write_bytes(b"keep the key recoverable")
+    encrypt_file(source, container, key)
+    original = key.read_bytes()
+    destination = key
+    if alias:
+        destination = tmp_path / "alias"
+        os.link(key, destination)
+    with pytest.raises(SameFileError):
+        decrypt_file(container, destination, key, overwrite=True)
+    assert key.read_bytes() == destination.read_bytes() == original
+
+
+def test_bounded_reader_rejects_oversize_and_non_regular_inputs(tmp_path):
+    source = tmp_path / "source"
+    source.write_bytes(b"abc")
+    assert _read_bounded(source, 3) == b"abc"
+    with pytest.raises(FileServiceError, match="limit"):
+        _read_bounded(source, 2)
+    with pytest.raises(PathSecurityError):
+        _read_bounded(tmp_path, 3)
+
+
+def test_standalone_decrypt_requires_external_key_protection(tmp_path):
+    source, container, key, output = (tmp_path / name for name in ("source", "container", "key", "output"))
+    source.write_bytes(b"same authenticated payload")
+    encrypt_file(source, container, key)
+    parsed = parse_container(container.read_bytes())
+    container.write_bytes(serialize_container(
+        header=parsed.header,
+        ciphertext=parsed.ciphertext,
+        key_protection_id=KEY_PROT_KWP,
+        key_record=b"\x00" * 64,
+        gcm_tag=parsed.gcm_tag,
+    ))
+    with pytest.raises(ModeMismatchError, match="external-key"):
+        decrypt_file(container, output, key)
+    assert not output.exists()
 
 
 def test_io_01_no_overwrite_by_default(tmp_path: Path):

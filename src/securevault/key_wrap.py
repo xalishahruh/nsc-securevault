@@ -24,7 +24,7 @@ def _validate_kek(kek: bytes) -> None:
 def _validate_association(file_id: bytes, cipher_id: int) -> None:
     if not isinstance(file_id, bytes) or len(file_id) != FILE_ID_SIZE:
         raise InvalidKeyError(f"file_id must be exactly {FILE_ID_SIZE} bytes.")
-    if cipher_id not in SUPPORTED_CIPHER_IDS:
+    if type(cipher_id) is not int or cipher_id not in SUPPORTED_CIPHER_IDS:
         raise InvalidKeyError("cipher_id must be 1 (GCM) or 2 (CBC).")
 
 

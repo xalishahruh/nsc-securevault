@@ -23,6 +23,16 @@ from securevault.keyring import (
 FAST_KDF = KDFParameters(memory_cost=8192, iterations=1, parallelism=1)
 
 
+@pytest.mark.parametrize("cipher_id", [True, 1.0])
+def test_wrapped_dek_requires_integer_cipher_policy(cipher_id):
+    kek, file_id, dek = b"k" * 32, b"f" * 16, b"d" * 32
+    wrapped = wrap_dek(kek, file_id, 1, dek)
+    with pytest.raises(InvalidKeyError):
+        wrap_dek(kek, file_id, cipher_id, dek)
+    with pytest.raises(InvalidKeyError):
+        unwrap_dek(kek, wrapped, file_id, cipher_id)
+
+
 def test_argon2id_profile_and_output_size():
     assert DEFAULT_KDF_PARAMETERS == KDFParameters(65536, 3, 4)
     assert len(derive_unlock_key("test passphrase", b"s" * 16)) == 32

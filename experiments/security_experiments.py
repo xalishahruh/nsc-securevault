@@ -75,9 +75,9 @@ class ExperimentResult:
     expected_outcome: str
     observed_outcome: str
     exception_type: str
-    plaintext_published: bool
+    plaintext_returned: bool
     plaintext_matches_original: Optional[bool]
-    integrity_protected: bool
+    authentication_rejected: bool
     notes: str
 
 
@@ -188,9 +188,9 @@ def gcm_exp_modify_ciphertext() -> ExperimentResult:
         expected_outcome="AuthenticationError; no plaintext output",
         observed_outcome="AuthenticationError" if isinstance(exc, AuthenticationError) else f"Other: {type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=isinstance(exc, AuthenticationError) and pt is None,
+        authentication_rejected=isinstance(exc, AuthenticationError) and pt is None,
         notes="GCM authentication tag covers ciphertext; any modification causes tag mismatch.",
     )
 
@@ -209,10 +209,10 @@ def gcm_exp_modify_tag() -> ExperimentResult:
         expected_outcome="AuthenticationError; no plaintext output",
         observed_outcome="AuthenticationError" if isinstance(exc, AuthenticationError) else f"Other: {type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=isinstance(exc, AuthenticationError) and pt is None,
-        notes="GCM tag is GHASH of ciphertext; tag modification causes immediate rejection.",
+        authentication_rejected=isinstance(exc, AuthenticationError) and pt is None,
+        notes="The supplied GCM authentication tag fails verification.",
     )
 
 
@@ -221,7 +221,6 @@ def gcm_exp_modify_header_aad() -> ExperimentResult:
     container, dek, _, _, _ = _make_gcm_container()
     tampered = bytearray(container)
     tampered[10] ^= 0x01  # Tamper file_id byte in header (offset 10, within first 48 bytes)
-    # Note: file_id check in key_provider will trigger first; either error proves header protection
     try:
         parsed = parse_container(bytes(tampered))
         aad = parsed.immutable_header_bytes
@@ -230,7 +229,7 @@ def gcm_exp_modify_header_aad() -> ExperimentResult:
     except Exception as e:
         pt = None
         exc = e
-    protected = pt is None and exc is not None
+    protected = pt is None and isinstance(exc, AuthenticationError)
     return ExperimentResult(
         experiment_id="GCM-03",
         mode="GCM",
@@ -239,9 +238,9 @@ def gcm_exp_modify_header_aad() -> ExperimentResult:
         expected_outcome="AuthenticationError (header bound as AAD); no plaintext output",
         observed_outcome=f"{type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=protected,
+        authentication_rejected=protected,
         notes="Immutable header bytes are bound as GCM AAD. Any header modification is detected.",
     )
 
@@ -259,10 +258,10 @@ def gcm_exp_wrong_key() -> ExperimentResult:
         expected_outcome="AuthenticationError; no plaintext output",
         observed_outcome="AuthenticationError" if isinstance(exc, AuthenticationError) else f"Other: {type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=isinstance(exc, AuthenticationError) and pt is None,
-        notes="Wrong key causes GHASH mismatch; GCM tag verification fails before any plaintext is released.",
+        authentication_rejected=isinstance(exc, AuthenticationError) and pt is None,
+        notes="GCM tag verification rejected the wrong key in this trial.",
     )
 
 
@@ -279,9 +278,9 @@ def gcm_exp_truncate_container() -> ExperimentResult:
         expected_outcome="MalformedContainerError; no plaintext output",
         observed_outcome=f"{type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=exc is not None and pt is None,
+        authentication_rejected=False,
         notes="Parser enforces exact container size from header; truncation causes MalformedContainerError.",
     )
 
@@ -311,9 +310,9 @@ def cbc_exp_modify_ciphertext() -> ExperimentResult:
             else f"Other: {type(exc).__name__}" if exc else "Unknown"
         ),
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=matches,
-        integrity_protected=False,
+        authentication_rejected=False,
         notes=(
             "CBC propagates errors: first block fully corrupted, second block has the same bit flip. "
             "No authentication — corruption accepted silently if padding is valid."
@@ -341,9 +340,9 @@ def cbc_exp_modify_iv() -> ExperimentResult:
             else f"Exception: {type(exc).__name__}" if exc else "Unknown"
         ),
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=matches,
-        integrity_protected=False,
+        authentication_rejected=False,
         notes=(
             "IV XOR feeds directly into first block decryption. "
             "CBC IV tampering silently corrupts exactly the first plaintext block; all subsequent blocks are unaffected. "
@@ -370,9 +369,9 @@ def cbc_exp_wrong_key() -> ExperimentResult:
             else f"Exception: {type(exc).__name__}" if exc else "Unknown"
         ),
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=matches,
-        integrity_protected=False,
+        authentication_rejected=False,
         notes=(
             "CBC wrong key typically corrupts padding; PaddingError is raised in most cases "
             "but is NOT a reliable authentication mechanism — it is probabilistic, not cryptographic."
@@ -393,9 +392,9 @@ def cbc_exp_truncate_ciphertext() -> ExperimentResult:
         expected_outcome="MalformedContainerError from parser; no plaintext output",
         observed_outcome=f"{type(exc).__name__}" if exc else "ACCEPTED (UNEXPECTED)",
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=None if pt is None else pt == PLAINTEXT,
-        integrity_protected=exc is not None and pt is None,
+        authentication_rejected=False,
         notes="Container parser enforces exact size; structural truncation is detected at parse time (not cryptographically).",
     )
 
@@ -453,9 +452,9 @@ def cbc_exp_controlled_plaintext_corruption() -> ExperimentResult:
             else f"Exception: {type(exc).__name__}" if exc else "Unknown"
         ),
         exception_type=type(exc).__name__ if exc else "None",
-        plaintext_published=pt is not None,
+        plaintext_returned=pt is not None,
         plaintext_matches_original=matches,
-        integrity_protected=False,
+        authentication_rejected=False,
         notes=(
             "CRITICAL FINDING: AES-CBC has no inherent integrity or authentication. "
             "Padding validity is NOT cryptographic authentication. "
@@ -471,7 +470,7 @@ def cbc_exp_controlled_plaintext_corruption() -> ExperimentResult:
 HEADER = [
     "experiment_id", "mode", "tamper_target", "tamper_description",
     "expected_outcome", "observed_outcome", "exception_type",
-    "plaintext_published", "plaintext_matches_original", "integrity_protected", "notes",
+    "plaintext_returned", "plaintext_matches_original", "authentication_rejected", "notes",
 ]
 
 EXPERIMENTS = [
@@ -494,7 +493,6 @@ def run_all() -> list[ExperimentResult]:
         try:
             r = fn()
             results.append(r)
-            status = "PASS" if r.integrity_protected or r.experiment_id.startswith("CBC") else "FAIL"
             print(f"  [{r.experiment_id}] {r.tamper_target}: {r.observed_outcome[:80]}")
         except Exception as exc:
             print(f"  [ERROR] {fn.__name__}: {exc}", file=sys.stderr)
@@ -515,8 +513,8 @@ def write_csv(results: list[ExperimentResult], output_path: Path) -> None:
                     [
                         r.experiment_id, r.mode, r.tamper_target, r.tamper_description,
                         r.expected_outcome, r.observed_outcome, r.exception_type,
-                        r.plaintext_published, r.plaintext_matches_original,
-                        r.integrity_protected, r.notes,
+                        r.plaintext_returned, r.plaintext_matches_original,
+                        r.authentication_rejected, r.notes,
                     ]
                 )
             fh.flush()
@@ -551,36 +549,14 @@ def main() -> None:
     print(f"Plaintext fixture: {len(PLAINTEXT)} bytes")
     print()
 
-    print("Running GCM experiments:")
-    gcm_results = []
-    for fn in EXPERIMENTS[:5]:
-        r = fn()
-        gcm_results.append(r)
-        icon = "✓" if r.integrity_protected else "✗"
-        print(f"  [{r.experiment_id}] {icon} {r.tamper_target}: {r.observed_outcome[:75]}")
-
-    print()
-    print("Running CBC experiments:")
-    cbc_results = []
-    for fn in EXPERIMENTS[5:]:
-        r = fn()
-        cbc_results.append(r)
-        icon = "✓" if r.integrity_protected else "✗ (by design — CBC has no integrity)"
-        print(f"  [{r.experiment_id}] {icon} {r.tamper_target}: {r.observed_outcome[:75]}")
-
-    all_results = gcm_results + cbc_results
-    write_csv(all_results, args.output)
-    print()
+    results = [run() for run in EXPERIMENTS]
+    for result in results:
+        print(f"  [{result.experiment_id}] {result.tamper_target}: {result.observed_outcome}")
+    write_csv(results, args.output)
     print(f"Results written to: {args.output}")
-    print()
-    print("Summary:")
-    gcm_protected = sum(1 for r in gcm_results if r.integrity_protected)
-    cbc_protected = sum(1 for r in cbc_results if r.integrity_protected)
-    print(f"  GCM: {gcm_protected}/{len(gcm_results)} tamper cases detected and rejected (no plaintext published)")
-    print(f"  CBC: {cbc_protected}/{len(cbc_results)} tamper cases detected (structural only; no cryptographic integrity)")
-    print()
-    print("FINDING: AES-CBC padding validity ≠ ciphertext integrity.")
-    print("FINDING: AES-GCM rejects ALL tamper cases before releasing any plaintext.")
+    print(f"Authentication rejections: {sum(r.authentication_rejected for r in results)}")
+    print(f"Structural rejections: {sum(r.exception_type == 'MalformedContainerError' for r in results)}")
+    print("Plaintext return is measured in memory. CBC padding checks do not authenticate.")
 
 
 if __name__ == "__main__":
